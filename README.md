@@ -1,72 +1,96 @@
 # MicroPython for VS Code
 
-MicroPython for VS Code provides a general workflow for MicroPython devices focused on two core capabilities:
+VS Code extension for MicroPython-supported devices.
 
-- Persistent terminal and REPL access
-- Remote device workspace file management
+It gives you two main things:
 
-## Highlights
+- REPL access in a VS Code terminal
+- Device filesystem control from the sidebar
 
-- Persistent backend-owned REPL session inside VS Code
-- Integrated MicroPython terminal backed by a VS Code `Pseudoterminal`
-- Device selection and reconnect-aware session handling
-- Remote workspace browsing and editing
-- Create, rename, delete, upload, and download files and folders on the device
-- Mount device workspace in Explorer through the `micropython:` file system provider
+You can connect to a board, open the REPL, edit files on the device, download files, delete files, fetch everything, link a local folder, and upload a whole folder in bulk.
 
 ## Current support
 
-- Linux host runtime for the current release
-- Packaged runtime targets the Linux architecture it was built for, such as `linux-x64`
+This release currently supports Linux only.
+
+## What you can do
+
+- Select a connected MicroPython device
+- Open a MicroPython terminal and use the REPL
+- Soft reset the device
+- Run the current file in non-interactive mode
+- Run the current file in interactive mode
+- Browse the device workspace in the sidebar
+- Open and edit files directly from the device
+- Create, rename, copy, paste, and delete files or folders
+- Download selected files with the download action
+- Delete selected files with the delete action
+- Fetch all files from the device
+- Link a local folder and sync or upload the whole folder
+
+## Install from VSIX
+
+1. Open VS Code.
+2. Go to the Extensions view.
+3. Click the `...` menu in the top-right of the Extensions panel.
+4. Choose `Install from VSIX...`.
+5. Select your VSIX file, for example `micropython-vscode-extension-0.1.0.vsix`.
+6. Install the extension shown as `MicroPython`.
+
+![Open the Extensions menu and choose Install from VSIX](media/readme/install-from-vsix-file-picker.png)
+
+Open the Extensions menu, then choose `Install from VSIX...`.
+
+![Select the VSIX package file](media/readme/install-from-vsix-menu.png)
+
+Select the VSIX package file and continue with the installation.
+
+After install, you will see a `MicroPython` view in the Activity Bar.
+
+## First use
+
+1. Connect your MicroPython device over USB.
+2. Open the `MicroPython` sidebar.
+3. Click `Select Device`.
+4. Click `Open Terminal` to open the REPL.
+5. Use the `MicroPython Workspace` view to work with files on the device.
+
+When the terminal opens, you can type commands directly and see the board response in VS Code.
+
+![MicroPython sidebar with actions, workspace, and REPL terminal](media/readme/micropython-sidebar-terminal.png)
+
+## Workspace actions
+
+The `MicroPython Workspace` view is for device files and folders.
+
+- Click a file to open and edit it
+- Use refresh to reload the device file tree
+- Use the download action to select files and download them
+- Use the delete action to select files and remove them
+- Use `Link Folder` when you want to sync a local folder to the device in bulk
+
+This is useful when you want to push a project folder instead of uploading files one by one.
+
+![Workspace actions for refresh, download selection, and delete selection](media/readme/workspace-actions.png)
+
+The download icon starts file selection for download. The delete icon starts file selection for removal.
 
 ## Requirements
 
-- Visual Studio Code `1.85.0` or newer
-- USB/serial permissions on the host machine
-- A connected MicroPython-compatible device
+- VS Code 1.85.0 or newer
+- A MicroPython-compatible device
+- USB or serial permission on Linux
 
-## Build
+## Notes
+
+- This extension is focused on simple MicroPython workflow inside VS Code
+- Cross-platform runtime support is not included yet
+
+## Build from source
+
+If you are working on this repository:
 
 ```bash
+npm install
 npm run build
 ```
-
-This stages the bundled runtime under `runtime/<platform>` and compiles the extension.
-
-## Getting started
-
-1. Install the extension.
-2. Connect your MicroPython device over USB.
-3. Open the MicroPython view container from the activity bar.
-4. Run `MicroPython: Select Device`.
-5. Run `MicroPython: Open Terminal`.
-6. Use workspace commands from the sidebar to manage device files.
-
-## Main commands
-
-- `MicroPython: Select Device`
-- `MicroPython: Open Terminal`
-- `MicroPython: Soft Reset Device`
-- `MicroPython: Run Non-Interactive File`
-- `MicroPython: Run Interactive File`
-- `MicroPython: Refresh Workspace`
-- `MicroPython: New Workspace File`
-- `MicroPython: New Workspace Folder`
-- `MicroPython: Rename Workspace Entry`
-- `MicroPython: Delete Workspace Entry`
-- `MicroPython: Upload Into Workspace`
-- `MicroPython: Download Workspace Entry`
-- `MicroPython: Mount Workspace In Explorer`
-- `MicroPython: Clear All Files`
-
-## Settings
-
-- `micropython.resetTimeoutSeconds`: timeout waiting for prompt after soft reset
-- `micropython.runTimeoutSeconds`: timeout for non-interactive file execution, set `0` to disable
-- `micropython.autoConnectOnDetect`: auto-open session when selected device is detected
-- `micropython.autoScanWorkspace`: auto-scan workspace when the view opens
-
-## Support
-
-- Website: https://micropython.io
-- Email: mailto:contact@micropython.io
