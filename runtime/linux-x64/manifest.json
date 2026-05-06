@@ -1,0 +1,8 @@
+{
+  "platformKey": "linux-x64",
+  "pythonVersion": "3.12.3",
+  "pythonExecutable": "bin/python3",
+  "sitePackages": "lib/python3.12/site-packages",
+  "libraryPath": "lib",
+  "sourceSitePackages": "lib/python3.12/site-packages"
+}

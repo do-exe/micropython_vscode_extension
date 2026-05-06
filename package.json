@@ -1,0 +1,368 @@
+{
+  "name": "micropython-vscode-extension",
+  "displayName": "MicroPython",
+  "description": "General MicroPython device extension for persistent REPL access and remote workspace file management.",
+  "version": "0.1.0",
+  "publisher": "micropython-extension",
+  "author": "do-exe",
+  "license": "MIT",
+  "icon": "media/micropython-marketplace-icon.png",
+  "homepage": "update soon",
+  "bugs": {
+    "url": "update soon",
+    "email": "update soon"
+  },
+  "galleryBanner": {
+    "color": "#050505",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "micropython",
+    "micropython",
+    "serial",
+    "repl",
+    "embedded",
+    "python",
+    "usb",
+    "filesystem",
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "out/extension.js",
+  "files": [
+    "out/**",
+    "backend/**",
+    "runtime/**",
+    "media/**",
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SUPPORT.md"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "micropythonSidebar",
+          "title": "MicroPython",
+          "icon": "media/micropython.svg"
+        }
+      ]
+    },
+    "views": {
+      "micropythonSidebar": [
+        {
+          "id": "micropython.actionsView",
+          "name": "Actions",
+          "icon": "media/micropython.svg"
+        },
+        {
+          "id": "micropython.workspaceView",
+          "name": "MicroPython Workspace",
+          "icon": "media/new-folder.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "micropython.softResetDevice",
+        "title": "MicroPython: Soft Reset Device",
+        "icon": {
+          "light": "media/reset.svg",
+          "dark": "media/reset.svg"
+        }
+      },
+      {
+        "command": "micropython.selectDevice",
+        "title": "MicroPython: Select Device"
+      },
+      {
+        "command": "micropython.runCurrentFile",
+        "title": "MicroPython: Run Non-Interactive File",
+        "icon": {
+          "light": "media/run.svg",
+          "dark": "media/run.svg"
+        }
+      },
+      {
+        "command": "micropython.runInteractiveFile",
+        "title": "MicroPython: Run Interactive File",
+        "icon": {
+          "light": "media/run-interactive.svg",
+          "dark": "media/run-interactive.svg"
+        }
+      },
+      {
+        "command": "micropython.openTerminal",
+        "title": "MicroPython: Open Terminal",
+        "icon": {
+          "light": "media/chip.svg",
+          "dark": "media/chip.svg"
+        }
+      },
+      {
+        "command": "micropython.linkFolder",
+        "title": "MicroPython: Link Folder"
+      },
+      {
+        "command": "micropython.syncFolder",
+        "title": "MicroPython: Sync Folder"
+      },
+      {
+        "command": "micropython.fetchWorkspace",
+        "title": "MicroPython: Fetch All Files"
+      },
+      {
+        "command": "micropython.fetchWorkspacePartial",
+        "title": "MicroPython: Download Selected Files",
+        "icon": {
+          "light": "media/workspace-fetch-light.svg",
+          "dark": "media/workspace-fetch-dark.svg"
+        }
+      },
+      {
+        "command": "micropython.deleteWorkspaceSelection",
+        "title": "MicroPython: Delete Selected Files",
+        "icon": {
+          "light": "media/erase.svg",
+          "dark": "media/erase.svg"
+        }
+      },
+      {
+        "command": "micropython.fetchWorkspacePartialConfirm",
+        "title": "Download Selected Now",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.fetchWorkspacePartialClear",
+        "title": "Clear Download Selection",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.fetchWorkspacePartialCancel",
+        "title": "Close Download Selection",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.deleteWorkspaceSelectionConfirm",
+        "title": "Delete Selected Now",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.deleteWorkspaceSelectionClear",
+        "title": "Clear Delete Selection",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.deleteWorkspaceSelectionCancel",
+        "title": "Close Delete Selection",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.clearAllFiles",
+        "title": "MicroPython: Clear All Files",
+        "icon": {
+          "light": "media/reset.svg",
+          "dark": "media/reset.svg"
+        }
+      },
+      {
+        "command": "micropython.refreshWorkspace",
+        "title": "Refresh Workspace",
+        "category": "MicroPython",
+        "icon": {
+          "light": "media/workspace-refresh-light.svg",
+          "dark": "media/workspace-refresh-dark.svg"
+        }
+      },
+      {
+        "command": "micropython.newWorkspaceFile",
+        "title": "New File",
+        "category": "MicroPython",
+        "icon": {
+          "light": "media/workspace-new-file-light.svg",
+          "dark": "media/workspace-new-file-dark.svg"
+        }
+      },
+      {
+        "command": "micropython.newWorkspaceFolder",
+        "title": "New Folder",
+        "category": "MicroPython",
+        "icon": {
+          "light": "media/workspace-new-folder-light.svg",
+          "dark": "media/workspace-new-folder-dark.svg"
+        }
+      },
+      {
+        "command": "micropython.copyWorkspaceEntry",
+        "title": "Copy",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.pasteWorkspaceEntry",
+        "title": "Paste",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.renameWorkspaceEntry",
+        "title": "Rename",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.deleteWorkspaceEntry",
+        "title": "Delete",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.uploadWorkspaceEntry",
+        "title": "MicroPython: Upload Into Workspace"
+      },
+      {
+        "command": "micropython.downloadWorkspaceEntry",
+        "title": "Download",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.showWorkspaceEntryProperties",
+        "title": "Properties",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.mountWorkspace",
+        "title": "Mount Workspace In Explorer",
+        "category": "MicroPython",
+        "icon": {
+          "light": "media/workspace-mount-light.svg",
+          "dark": "media/workspace-mount-dark.svg"
+        }
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "micropython.newWorkspaceFile",
+          "when": "view == micropython.workspaceView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "micropython.newWorkspaceFolder",
+          "when": "view == micropython.workspaceView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "micropython.refreshWorkspace",
+          "when": "view == micropython.workspaceView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "micropython.fetchWorkspacePartial",
+          "when": "view == micropython.workspaceView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "micropython.deleteWorkspaceSelection",
+          "when": "view == micropython.workspaceView",
+          "group": "navigation@5"
+        },
+        {
+          "command": "micropython.mountWorkspace",
+          "when": "view == micropython.workspaceView",
+          "group": "navigation@6"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "micropython.renameWorkspaceEntry",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceFolder || viewItem == micropythonWorkspaceFile)",
+          "group": "1_main@1"
+        },
+        {
+          "command": "micropython.deleteWorkspaceEntry",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceFolder || viewItem == micropythonWorkspaceFile)",
+          "group": "1_main@2"
+        },
+        {
+          "command": "micropython.copyWorkspaceEntry",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceFolder || viewItem == micropythonWorkspaceFile)",
+          "group": "2_clipboard@1"
+        },
+        {
+          "command": "micropython.downloadWorkspaceEntry",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceRoot || viewItem == micropythonWorkspaceFolder || viewItem == micropythonWorkspaceFile)",
+          "group": "2_clipboard@2"
+        },
+        {
+          "command": "micropython.pasteWorkspaceEntry",
+          "when": "view == micropython.workspaceView && micropython.workspaceHasClipboard && (viewItem == micropythonWorkspaceRoot || viewItem == micropythonWorkspaceFolder || viewItem == micropythonWorkspaceFile)",
+          "group": "2_clipboard@3"
+        },
+        {
+          "command": "micropython.showWorkspaceEntryProperties",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceRoot || viewItem == micropythonWorkspaceFolder || viewItem == micropythonWorkspaceFile)",
+          "group": "3_info@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "micropython.syncFolder",
+          "when": "explorerResourceIsFolder"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "MicroPython",
+      "properties": {
+        "micropython.resetTimeoutSeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Timeout for waiting MicroPython prompt after soft reset."
+        },
+        "micropython.runTimeoutSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 600,
+          "description": "Timeout for running active Python file on MicroPython. Set to 0 to disable the timeout."
+        },
+        "micropython.autoConnectOnDetect": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open a MicroPython session when a detected device matches the current selection."
+        },
+        "micropython.autoScanWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically scan the device workspace when the MicroPython Workspace view is opened. Disable to require manual refresh."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "stage-runtime": "python3 scripts/stage_runtime.py",
+    "build": "npm run stage-runtime && npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run build",
+    "package:vsix": "npm run build && npx @vscode/vsce package --allow-missing-repository --no-dependencies --no-yarn"
+  },
+  "overrides": {
+    "cheerio": "1.0.0-rc.12"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.26.0",
+    "typescript": "^5.6.3"
+  }
+}

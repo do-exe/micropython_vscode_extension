@@ -1,0 +1,1608 @@
+import ast
+import base64
+import pathlib
+import sys
+import tempfile
+import threading
+import time
+import unittest
+
+
+BACKEND_DIR = pathlib.Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+import micropython_backend as backend
+
+
+def _frame(line: str) -> str:
+    return f"{backend.HELPER_FRAME_PREFIX}{line}{backend.HELPER_FRAME_SUFFIX}"
+
+
+class HelperSuppressionTests(unittest.TestCase):
+    def test_detects_custom_friendly_prompt_suffix(self) -> None:
+        self.assertTrue(backend._has_friendly_prompt(b"Device >>> "))
+
+    def test_strip_repl_prompt_prefix_removes_custom_prompt_label(self) -> None:
+        self.assertEqual(backend._strip_repl_prompt_prefix("Device >>> print(123)"), "print(123)")
+
+    def test_prompt_only_fragment_accepts_custom_prompt_label(self) -> None:
+        self.assertTrue(backend._is_prompt_only_fragment("Device >>>"))
+
+    def test_normalize_friendly_paste_source_normalizes_newlines(self) -> None:
+        self.assertEqual(
+            backend._normalize_friendly_paste_source("print(1)\r\nprint(2)\rprint(3)\n"),
+            b"print(1)\nprint(2)\nprint(3)\n",
+        )
+
+    def test_normalize_friendly_paste_source_accepts_bytes(self) -> None:
+        self.assertEqual(
+            backend._normalize_friendly_paste_source(b"print(1)\r\n"),
+            b"print(1)\n",
+        )
+
+    def test_detects_truncated_state_fragment(self) -> None:
+        self.assertTrue(backend._looks_like_helper_terminal_fragment('STATE:{"frame_id":7,"fb":"AAAA"'))
+
+    def test_detects_truncated_helper_echo_fragment(self) -> None:
+        fragment = '"_hyb_poll_state" in globals() else print("HYBRID_SYNC_ERR:HELPER_MISSING")'
+        self.assertTrue(backend._looks_like_helper_terminal_fragment(fragment))
+
+    def test_unwraps_framed_helper_line(self) -> None:
+        self.assertEqual(backend._clean_helper_line(_frame("HYBRID_READY")), "HYBRID_READY")
+
+    def test_parse_helper_output_reads_framed_state(self) -> None:
+        parsed = backend._parse_helper_output(_frame('STATE:{"frame_id":7,"changed":false}') + "\n")
+        self.assertEqual(parsed["lines"], ['STATE:{"frame_id":7,"changed":false}'])
+        self.assertEqual(parsed["states"], [{"frame_id": 7, "changed": False}])
+
+    def test_split_helper_framed_text_buffers_partial_prefix(self) -> None:
+        visible, frames, remainder = backend._split_helper_framed_text("visible\n{{MICROPYTHON_HY")
+        self.assertEqual(visible, "visible\n")
+        self.assertEqual(frames, [])
+        self.assertEqual(remainder, "{{MICROPYTHON_HY")
+
+    def test_suppressed_helper_fragment_does_not_pollute_terminal(self) -> None:
+        emitted: list[str] = []
+        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
+
+        with session._helper_condition:
+            session._suppress_terminal_helper_output = True
+            session._suppress_terminal_helper_depth = 1
+            session._suppress_terminal_helper_output_deadline = time.monotonic() + 1.0
+            session._suppress_terminal_helper_activity_seen = False
+
+        session._process_terminal_text(_frame('STATE:{"frame_id":1'))
+        session._process_terminal_text('\n>>> ')
+
+        self.assertEqual(emitted, [])
+
+    def test_unsuppressed_partial_helper_frame_does_not_pollute_terminal(self) -> None:
+        emitted: list[str] = []
+        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
+
+        session._process_terminal_text("visible\n{{MICROPYTHON_HY")
+        session._process_terminal_text('B:STATE:{"frame_id":1,"changed":false}}\n')
+
+        self.assertEqual(emitted, ["visible\n"])
+
+    def test_unsuppressed_helper_lines_are_filtered_from_terminal(self) -> None:
+        emitted: list[str] = []
+        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
+
+        session._process_terminal_text(
+            "visible\n"
+            '_hyb_poll_state(7) if "_hyb_poll_state" in globals() else print("HYBRID_SYNC_ERR:HELPER_MISSING")\n'
+            "HYBRID_MODE:ON\n"
+        )
+
+        self.assertEqual(emitted, ["visible\n"])
+
+    def test_overlapping_helper_prompts_and_next_command_stay_suppressed(self) -> None:
+        emitted: list[str] = []
+        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
+
+        with session._helper_condition:
+            session._suppress_terminal_helper_output = True
+            session._suppress_terminal_helper_depth = 2
+            session._suppress_terminal_helper_output_deadline = time.monotonic() + 1.0
+            session._suppress_terminal_helper_activity_seen = True
+
+        session._process_terminal_text(
+            '>>> \n'
+            '_hyb_poll_state(11427) if "_hyb_poll_state" in globals() else print("HYBRID_SYNC_ERR:HELPER_MISSING")\n'
+            + _frame('STATE:{"frame_id":11427,"changed":false}')
+            + '\n'
+            '>>> '
+        )
+
+        self.assertEqual(emitted, [])
+        self.assertFalse(session._suppress_terminal_helper_output)
+        self.assertEqual(session._suppress_terminal_helper_depth, 0)
+
+    def test_enter_raw_repl_accepts_banner_and_prompt_in_same_read(self) -> None:
+        class Dummy:
+            def __init__(self) -> None:
+                self._in_raw_repl = False
+                self.read_calls = 0
+
+            def _write_bytes(self, _data: bytes, flush: bool = True) -> None:
+                return None
+
+            def _drain_serial_input(self) -> None:
+                return None
+
+            def _raw_read_until(
+                self,
+                ending: bytes,
+                timeout: float | None = 1.0,
+                timeout_overall: float | None = None,
+                data_consumer=None,
+                cancel_event=None,
+                cancel_handler=None,
+            ) -> bytes:
+                self.read_calls += 1
+                if ending == backend.RAW_REPL_BANNER:
+                    return b"\r\n>>> \r\nraw REPL; CTRL-B to exit\r\n>"
+                return b">"
+
+        dummy = Dummy()
+        backend.MicroPythonController._enter_raw_repl(dummy)
+
+        self.assertTrue(dummy._in_raw_repl)
+        self.assertEqual(dummy.read_calls, 1)
+
+    def test_sync_exec_raw_and_read_reuses_existing_raw_repl(self) -> None:
+        class Dummy:
+            def __init__(self) -> None:
+                self._in_raw_repl = True
+                self.enter_calls = 0
+                self.exit_calls = 0
+                self.exec_calls = 0
+
+            def _enter_raw_repl(self, timeout_overall: float = 0.0) -> None:
+                self.enter_calls += 1
+
+            def _exit_raw_repl(self) -> None:
+                self.exit_calls += 1
+
+            def _exec_raw_no_follow(self, _code: str) -> None:
+                self.exec_calls += 1
+
+            def _raw_follow(
+                self,
+                timeout: float | None,
+                line_callback=None,
+                cancel_event=None,
+            ) -> tuple[bytes, bytes, bool]:
+                return (b"OK", b"", False)
+
+        dummy = Dummy()
+        output = backend.MicroPythonController.sync_exec_raw_and_read(dummy, "print('x')", timeout=2.0)
+
+        self.assertEqual(output, "OK")
+        self.assertEqual(dummy.exec_calls, 1)
+        self.assertEqual(dummy.enter_calls, 0)
+        self.assertEqual(dummy.exit_calls, 0)
+
+
+class SyncFolderTests(unittest.TestCase):
+    def test_normalize_remote_folder_allows_device_root(self) -> None:
+        self.assertEqual(backend._normalize_remote_folder("/"), "/")
+        self.assertEqual(backend._normalize_remote_folder("apps/demo"), "/apps/demo")
+
+    def test_scan_local_folder_skips_hidden_entries_like_desktop_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "visible").mkdir()
+            (root / ".hidden_dir").mkdir()
+            (root / "__pycache__").mkdir()
+            (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+            (root / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+            (root / "visible" / "module.py").write_text("print('visible')\n", encoding="utf-8")
+            (root / ".hidden_dir" / "secret.py").write_text("print('no')\n", encoding="utf-8")
+            (root / "__pycache__" / "module.cpython-312.pyc").write_bytes(b"skip")
+
+            local_root, directories, files = backend._scan_local_folder(str(root), "/")
+
+        self.assertEqual(local_root, root.resolve())
+        self.assertEqual(directories, ["/", "/visible"])
+        self.assertEqual(
+            [file_info["relative_path"] for file_info in files],
+            ["main.py", "visible/module.py"],
+        )
+        self.assertEqual(
+            [file_info["remote_path"] for file_info in files],
+            ["/main.py", "/visible/module.py"],
+        )
+
+    def test_build_sync_plan_respects_delete_mode(self) -> None:
+        files = [
+            {"remote_path": "/main.py", "size_bytes": 10},
+            {"remote_path": "/lib/util.py", "size_bytes": 20},
+        ]
+        remote_sizes = {
+            "/main.py": 10,
+            "/lib/util.py": 25,
+            "/stale.py": 5,
+        }
+
+        unchanged, to_upload, to_delete, extra_remote = backend._build_sync_plan(
+            files,
+            remote_sizes,
+            delete_extraneous=False,
+        )
+        self.assertEqual(unchanged, ["/main.py"])
+        self.assertEqual([file_info["remote_path"] for file_info in to_upload], ["/lib/util.py"])
+        self.assertEqual(to_delete, [])
+        self.assertEqual(extra_remote, ["/stale.py"])
+
+        _, _, to_delete_mirror, _ = backend._build_sync_plan(
+            files,
+            remote_sizes,
+            delete_extraneous=True,
+        )
+        self.assertEqual(to_delete_mirror, ["/stale.py"])
+
+    def test_build_sync_plan_uses_signatures_for_same_size_files(self) -> None:
+        files = [
+            {"remote_path": "/same.py", "size_bytes": 10},
+            {"remote_path": "/changed.py", "size_bytes": 10},
+        ]
+        remote_sizes = {
+            "/same.py": 10,
+            "/changed.py": 10,
+        }
+
+        unchanged, to_upload, _, _ = backend._build_sync_plan(
+            files,
+            remote_sizes,
+            delete_extraneous=False,
+            signature_matches={"/same.py"},
+        )
+
+        self.assertEqual(unchanged, ["/same.py"])
+        self.assertEqual([file_info["remote_path"] for file_info in to_upload], ["/changed.py"])
+
+    def test_build_sync_directory_plan_includes_intermediate_folders(self) -> None:
+        files = [{"remote_path": "/lib/usb/device/core.mpy"}]
+        directories = backend._build_sync_directory_plan("/", files)
+        self.assertEqual(directories, ["/", "/lib", "/lib/usb", "/lib/usb/device"])
+
+    def test_build_sync_plan_supports_signature_and_size_fallback_mix(self) -> None:
+        files = [
+            {"remote_path": "/sig-match.py", "size_bytes": 10},
+            {"remote_path": "/size-fallback.py", "size_bytes": 20},
+            {"remote_path": "/recent-change.py", "size_bytes": 30},
+        ]
+        remote_sizes = {
+            "/sig-match.py": 10,
+            "/size-fallback.py": 20,
+            "/recent-change.py": 30,
+        }
+
+        unchanged, to_upload, _, _ = backend._build_sync_plan(
+            files,
+            remote_sizes,
+            delete_extraneous=False,
+            signature_matches={"/sig-match.py"},
+            size_fallback_paths={"/size-fallback.py"},
+        )
+
+        self.assertEqual(unchanged, ["/sig-match.py", "/size-fallback.py"])
+        self.assertEqual([file_info["remote_path"] for file_info in to_upload], ["/recent-change.py"])
+
+    def test_device_size_scan_script_uses_desktop_style_ilistdir(self) -> None:
+        script = backend._device_list_file_sizes_script("/apps")
+        self.assertIn("os.ilistdir", script)
+        self.assertIn("def _is_dir", script)
+        self.assertIn("_entry[1] & 0x4000", script)
+        self.assertIn("_stat = os.stat(_full)", script)
+        self.assertIn("_mode & 0x4000", script)
+        self.assertIn('_scan(_root)', script)
+
+    def test_device_size_stream_scan_script_emits_rows(self) -> None:
+        script = backend._device_list_file_sizes_stream_script("/apps")
+        self.assertIn("SIZE:", script)
+        self.assertIn("SIZE_SCAN_DONE", script)
+        self.assertIn("os.ilistdir", script)
+        self.assertIn("def _is_dir", script)
+
+    def test_device_signature_scan_script_uses_expected_marker(self) -> None:
+        script = backend._device_list_file_signatures_script(["/apps/main.py"])
+        self.assertIn("open(_path, 'rb')", script)
+        self.assertIn("SIGS:", script)
+
+    def test_device_signature_stream_scan_script_emits_rows(self) -> None:
+        script = backend._device_list_file_signatures_stream_script(["/apps/main.py"])
+        self.assertIn("SIG:", script)
+        self.assertIn("SIG_SCAN_DONE", script)
+        self.assertIn("open(_path, 'rb')", script)
+
+    def test_device_selected_size_scan_script_uses_expected_marker(self) -> None:
+        script = backend._device_selected_file_sizes_script(["/apps/main.py"])
+        self.assertIn("_stat = os.stat(_path)", script)
+        self.assertIn("open(_path, 'rb')", script)
+        self.assertIn("PATH_SIZES:", script)
+
+    def test_device_selected_size_stream_scan_script_uses_expected_marker(self) -> None:
+        script = backend._device_selected_file_sizes_stream_script(["/apps/main.py"])
+        self.assertIn("PATHSIZE:", script)
+        self.assertIn("PATH_SIZE_SCAN_DONE", script)
+        self.assertIn("open(_path, 'rb')", script)
+
+    def test_parse_device_signatures_output(self) -> None:
+        parsed = backend._parse_device_signatures_output("SIGS:{'/a.py': 'deadbeef', '/b.py': None}")
+        self.assertEqual(parsed, {"/a.py": "deadbeef", "/b.py": None})
+
+    def test_parse_device_signatures_stream_output(self) -> None:
+        path_a = "/apps/main.py"
+        path_b = "/apps/missing.py"
+        parsed = backend._parse_device_signatures_stream_output(
+            f"SIG:{len(path_a)}:{path_a}:1:deadbeef\n"
+            f"SIG:{len(path_b)}:{path_b}:0:\n"
+            "SIG_SCAN_DONE\n"
+        )
+        self.assertEqual(parsed, {path_a: "deadbeef", path_b: None})
+
+    def test_parse_device_sizes_stream_output(self) -> None:
+        parsed = backend._parse_device_sizes_stream_output(
+            "SIZE:/apps/main.py:42\nSIZE:/apps/lib/util.py:7\nSIZE_SCAN_DONE\n"
+        )
+        self.assertEqual(parsed, {"/apps/main.py": 42, "/apps/lib/util.py": 7})
+
+    def test_parse_device_selected_sizes_output(self) -> None:
+        parsed = backend._parse_device_selected_sizes_output("PATH_SIZES:{'/a.py': 42, '/b.py': None}")
+        self.assertEqual(parsed, {"/a.py": 42, "/b.py": None})
+
+    def test_parse_device_selected_sizes_stream_output(self) -> None:
+        path_a = "/apps/main.py"
+        path_b = "/apps/missing.py"
+        parsed = backend._parse_device_selected_sizes_stream_output(
+            f"PATHSIZE:{len(path_a)}:{path_a}:1:42\n"
+            f"PATHSIZE:{len(path_b)}:{path_b}:0:\n"
+            "PATH_SIZE_SCAN_DONE\n"
+        )
+        self.assertEqual(parsed, {path_a: 42, path_b: None})
+
+    def test_device_put_file_script_matches_desktop_write_shape(self) -> None:
+        script = backend._device_put_file_script("/db/test.json", b'{"ok": true}\r\n')
+        self.assertIn('_f = open("/db/test.json", \'wb\')', script)
+        self.assertIn('_f.write(b\'{"ok": true}\\r\\n\')', script)
+        self.assertIn('_f.close()', script)
+        self.assertIn('print("OK")', script)
+        self.assertNotIn("with open(", script)
+
+    def test_device_clear_all_script_matches_desktop_cleanup_markers(self) -> None:
+        script = backend._device_clear_all_script()
+        self.assertIn("CLEANUP_START", script)
+        self.assertIn("CLEANUP_DONE", script)
+        self.assertIn("FILE_DEL:", script)
+        self.assertIn("DIR_DEL:", script)
+        self.assertIn("_rmtree('')", script)
+
+    def test_parse_clear_all_output_collects_deletes_and_warnings(self) -> None:
+        parsed = backend._parse_clear_all_output(
+            "CLEANUP_START\n"
+            "FILE_DEL:boot.py\n"
+            "DIR_DEL:apps/demo\n"
+            "FILE_ERR:apps/demo.py busy\n"
+            "CLEANUP_DONE\n"
+        )
+        self.assertTrue(parsed["startSeen"])
+        self.assertTrue(parsed["doneSeen"])
+        self.assertEqual(parsed["filesDeleted"], ["boot.py"])
+        self.assertEqual(parsed["directoriesDeleted"], ["apps/demo"])
+        self.assertEqual(parsed["warningLines"], ["FILE_ERR:apps/demo.py busy"])
+
+    def test_sync_device_relative_path_matches_desktop_upload_paths(self) -> None:
+        self.assertEqual(backend._sync_device_relative_path("/db/test.json"), "db/test.json")
+        self.assertEqual(backend._sync_device_relative_path("db/test.json"), "db/test.json")
+        self.assertEqual(backend._sync_device_relative_path("/"), "")
+
+    def test_sync_device_absolute_path_keeps_writes_rooted(self) -> None:
+        self.assertEqual(backend._sync_device_absolute_path("/db/test.json"), "/db/test.json")
+        self.assertEqual(backend._sync_device_absolute_path("db/test.json"), "/db/test.json")
+        self.assertEqual(backend._sync_device_absolute_path("/"), "/")
+
+    def test_select_workspace_entries_returns_all_when_unfiltered(self) -> None:
+        directories, files = backend._select_workspace_entries(
+            ["/apps", "/apps/demo"],
+            {
+                "/boot.py": 5,
+                "/apps/demo/main.py": 10,
+            },
+            None,
+        )
+        self.assertEqual(directories, ["/apps", "/apps/demo"])
+        self.assertEqual(
+            files,
+            {
+                "/apps/demo/main.py": 10,
+                "/boot.py": 5,
+            },
+        )
+
+    def test_select_workspace_entries_expands_selected_folder_and_file(self) -> None:
+        directories, files = backend._select_workspace_entries(
+            ["/apps", "/apps/demo", "/docs"],
+            {
+                "/apps/demo/main.py": 10,
+                "/apps/demo/lib/util.py": 20,
+                "/docs/readme.txt": 8,
+            },
+            ["/apps/demo", "/docs/readme.txt"],
+        )
+        self.assertEqual(directories, ["/apps", "/apps/demo", "/docs"])
+        self.assertEqual(
+            files,
+            {
+                "/apps/demo/lib/util.py": 20,
+                "/apps/demo/main.py": 10,
+                "/docs/readme.txt": 8,
+            },
+        )
+
+    def test_select_workspace_entries_rejects_missing_selection(self) -> None:
+        with self.assertRaises(ValueError):
+            backend._select_workspace_entries(["/apps"], {"/boot.py": 5}, ["/missing.py"])
+
+    def test_local_file_signature_matches_fnv_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "x.txt"
+            payload = b"abc123\n"
+            path.write_bytes(payload)
+            self.assertEqual(backend._compute_local_file_signature(path), backend._fnv1a32_bytes(payload))
+
+    def test_parse_device_sizes_output_raises_on_missing_marker(self) -> None:
+        with self.assertRaises(backend.ControllerError):
+            backend._parse_device_sizes_output("Traceback (most recent call last): boom")
+
+    def test_parse_device_signatures_output_raises_on_missing_marker(self) -> None:
+        with self.assertRaises(backend.ControllerError):
+            backend._parse_device_signatures_output("Traceback (most recent call last): boom")
+
+    def test_exec_sync_script_can_reuse_open_raw_repl(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def exec_source(self, source: str, timeout_seconds: float) -> tuple[bytes, bytes]:
+                self.calls.append(f"fresh:{timeout_seconds}:{source}")
+                return b"fresh", b""
+
+            def exec_source_in_raw_repl(self, source: str, timeout_seconds: float) -> tuple[bytes, bytes]:
+                self.calls.append(f"raw:{timeout_seconds}:{source}")
+                return b"raw", b""
+
+        controller = FakeController()
+        result = backend._exec_sync_script(controller, "print('x')", timeout_seconds=3.0, keep_raw_repl=True)
+
+        self.assertEqual(result, "raw")
+        self.assertEqual(controller.calls, ["raw:3.0:print('x')"])
+
+    def test_sync_get_file_sizes_retries_once_after_timeout(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.exec_calls = 0
+                self.recover_calls = 0
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.exec_calls += 1
+                self.code = code
+                self.timeout = timeout
+                if self.exec_calls == 1:
+                    raise backend.ControllerError("Timeout waiting for raw REPL output")
+                return "SIZES:{'/apps/main.py': 42}"
+
+            def sync_enter_friendly_repl(self) -> None:
+                self.recover_calls += 1
+
+        controller = FakeController()
+        sizes = backend.MicroPythonController.sync_get_file_sizes(controller, "/apps", timeout=25.0)
+
+        self.assertEqual(sizes, {"/apps/main.py": 42})
+        self.assertEqual(controller.exec_calls, 2)
+        self.assertEqual(controller.recover_calls, 1)
+        self.assertEqual(controller.timeout, 25.0)
+        self.assertIn("os.ilistdir", controller.code)
+
+    def test_sync_get_file_sizes_uses_stream_fallback_when_marker_missing(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                if "SIZE_SCAN_DONE" in code:
+                    self.calls.append("stream")
+                    return "SIZE:/apps/main.py:42\nSIZE_SCAN_DONE\n"
+                self.calls.append("dict")
+                return "{'/apps/main.py': 42}"
+
+            def sync_enter_friendly_repl(self) -> None:
+                pass
+
+        controller = FakeController()
+        sizes = backend.MicroPythonController.sync_get_file_sizes(controller, "/apps", timeout=25.0)
+
+        self.assertEqual(sizes, {"/apps/main.py": 42})
+        self.assertEqual(controller.calls, ["dict", "stream"])
+
+    def test_sync_get_file_sizes_uses_friendly_scan_when_raw_entry_fails(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.raw_calls = 0
+                self.friendly_calls = 0
+                self.recover_calls = 0
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.raw_calls += 1
+                raise backend.ControllerError("could not enter raw REPL: banner")
+
+            def sync_exec_friendly_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.friendly_calls += 1
+                return "SIZE:/apps/main.py:42\nSIZE_SCAN_DONE\n"
+
+            def sync_enter_friendly_repl(self) -> None:
+                self.recover_calls += 1
+
+        controller = FakeController()
+        sizes = backend.MicroPythonController.sync_get_file_sizes(controller, "/apps", timeout=25.0)
+
+        self.assertEqual(sizes, {"/apps/main.py": 42})
+        self.assertEqual(controller.raw_calls, 2)
+        self.assertEqual(controller.recover_calls, 1)
+        self.assertEqual(controller.friendly_calls, 1)
+
+    def test_sync_get_file_signatures_retries_once_after_timeout(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.exec_calls = 0
+                self.recover_calls = 0
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.exec_calls += 1
+                self.code = code
+                self.timeout = timeout
+                if self.exec_calls == 1:
+                    raise backend.ControllerError("Timeout waiting for raw REPL output")
+                return "SIGS:{'/apps/main.py': 'deadbeef'}"
+
+            def sync_enter_friendly_repl(self) -> None:
+                self.recover_calls += 1
+
+        controller = FakeController()
+        signatures = backend.MicroPythonController.sync_get_file_signatures(
+            controller,
+            ["/apps/main.py"],
+            timeout=33.0,
+        )
+
+        self.assertEqual(signatures, {"/apps/main.py": "deadbeef"})
+        self.assertEqual(controller.exec_calls, 2)
+        self.assertEqual(controller.recover_calls, 1)
+        self.assertEqual(controller.timeout, 33.0)
+        self.assertIn("SIGS:", controller.code)
+
+    def test_sync_get_file_signatures_uses_stream_fallback_when_marker_missing(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                if "SIG_SCAN_DONE" in code:
+                    self.calls.append("stream")
+                    path = "/apps/main.py"
+                    return f"SIG:{len(path)}:{path}:1:deadbeef\nSIG_SCAN_DONE\n"
+                self.calls.append("dict")
+                return "{'/apps/main.py': 'deadbeef'}"
+
+            def sync_enter_friendly_repl(self) -> None:
+                pass
+
+            def sync_exec_friendly_and_read(self, code: str, timeout: float = 5.0) -> str:
+                raise AssertionError("friendly fallback should not be used in this scenario")
+
+        controller = FakeController()
+        signatures = backend.MicroPythonController.sync_get_file_signatures(
+            controller,
+            ["/apps/main.py"],
+            timeout=33.0,
+        )
+
+        self.assertEqual(signatures, {"/apps/main.py": "deadbeef"})
+        self.assertEqual(controller.calls, ["dict", "stream"])
+
+    def test_sync_get_file_signatures_uses_friendly_scan_when_raw_entry_fails(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.raw_calls = 0
+                self.friendly_calls = 0
+                self.recover_calls = 0
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.raw_calls += 1
+                raise backend.ControllerError("could not enter raw REPL: banner")
+
+            def sync_exec_friendly_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.friendly_calls += 1
+                path = "/apps/main.py"
+                return f"SIG:{len(path)}:{path}:1:deadbeef\nSIG_SCAN_DONE\n"
+
+            def sync_enter_friendly_repl(self) -> None:
+                self.recover_calls += 1
+
+        controller = FakeController()
+        signatures = backend.MicroPythonController.sync_get_file_signatures(
+            controller,
+            ["/apps/main.py"],
+            timeout=33.0,
+        )
+
+        self.assertEqual(signatures, {"/apps/main.py": "deadbeef"})
+        self.assertEqual(controller.raw_calls, 2)
+        self.assertEqual(controller.recover_calls, 1)
+        self.assertEqual(controller.friendly_calls, 1)
+
+    def test_sync_get_selected_file_sizes_uses_friendly_scan_when_raw_entry_fails(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.raw_calls = 0
+                self.friendly_calls = 0
+                self.recover_calls = 0
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.raw_calls += 1
+                raise backend.ControllerError("could not enter raw REPL: banner")
+
+            def sync_exec_friendly_and_read(self, code: str, timeout: float = 5.0) -> str:
+                self.friendly_calls += 1
+                return "PATH_SIZES:{'/apps/main.py': 42, '/apps/missing.py': None}"
+
+            def sync_enter_friendly_repl(self) -> None:
+                self.recover_calls += 1
+
+        controller = FakeController()
+        sizes = backend.MicroPythonController.sync_get_selected_file_sizes(
+            controller,
+            ["/apps/main.py", "/apps/missing.py"],
+            timeout=9.0,
+        )
+
+        self.assertEqual(sizes, {"/apps/main.py": 42, "/apps/missing.py": None})
+        self.assertEqual(controller.raw_calls, 2)
+        self.assertEqual(controller.recover_calls, 1)
+        self.assertEqual(controller.friendly_calls, 1)
+
+    def test_sync_get_selected_file_sizes_uses_stream_fallback_when_marker_missing(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                if "PATH_SIZE_SCAN_DONE" in code:
+                    self.calls.append("stream")
+                    path = "/apps/main.py"
+                    return f"PATHSIZE:{len(path)}:{path}:1:42\nPATH_SIZE_SCAN_DONE\n"
+                self.calls.append("dict")
+                return "{'/apps/main.py': 42}"
+
+            def sync_enter_friendly_repl(self) -> None:
+                pass
+
+            def sync_exec_friendly_and_read(self, code: str, timeout: float = 5.0) -> str:
+                raise AssertionError("friendly fallback should not be used in this scenario")
+
+        controller = FakeController()
+        sizes = backend.MicroPythonController.sync_get_selected_file_sizes(
+            controller,
+            ["/apps/main.py"],
+            timeout=9.0,
+        )
+
+        self.assertEqual(sizes, {"/apps/main.py": 42})
+        self.assertEqual(controller.calls, ["dict", "stream"])
+
+    def test_sync_get_selected_file_sizes_chunks_large_requests(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.batch_sizes: list[int] = []
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 5.0) -> str:
+                marker = "_paths = "
+                marker_start = code.find(marker)
+                if marker_start < 0:
+                    raise AssertionError("missing _paths marker in targeted scan code")
+                line_end = code.find("\n", marker_start)
+                paths_literal = code[marker_start + len(marker) : line_end]
+                batch_paths = ast.literal_eval(paths_literal)
+                self.batch_sizes.append(len(batch_paths))
+                return "PATH_SIZES:" + repr({path: 1 for path in batch_paths})
+
+            def sync_enter_friendly_repl(self) -> None:
+                pass
+
+            def sync_exec_friendly_and_read(self, code: str, timeout: float = 5.0) -> str:
+                raise AssertionError("friendly fallback should not be used in this scenario")
+
+        controller = FakeController()
+        remote_paths = [f"/apps/p{i}.py" for i in range(130)]
+        sizes = backend.MicroPythonController.sync_get_selected_file_sizes(
+            controller,
+            remote_paths,
+            timeout=9.0,
+        )
+
+        self.assertEqual(len(sizes), len(remote_paths))
+        self.assertGreaterEqual(len(controller.batch_sizes), 3)
+        self.assertTrue(all(size <= backend.SYNC_TARGETED_SCAN_BATCH_SIZE for size in controller.batch_sizes))
+
+    def test_read_remote_file_sizes_delegates_to_sync_get_file_sizes(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, float]] = []
+
+            def sync_get_file_sizes(self, remote_root: str, timeout: float = 0.0) -> dict[str, int]:
+                self.calls.append((remote_root, timeout))
+                return {"/main.py": 12}
+
+        controller = FakeController()
+        sizes = backend._read_remote_file_sizes(controller, "/")
+
+        self.assertEqual(sizes, {"/main.py": 12})
+        self.assertEqual(controller.calls, [("/", backend.SYNC_SCAN_COMMAND_TIMEOUT_SEC)])
+
+    def test_sync_folder_same_size_file_is_skipped_by_size_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            file_path = root / "main.py"
+            file_path.write_text("print('ok')\n", encoding="utf-8")
+            size_bytes = file_path.stat().st_size
+
+            class FakeController:
+                def __init__(self) -> None:
+                    self.port = "COM_TEST"
+
+                def sync_get_file_sizes(self, remote_root: str, timeout: float = 0.0) -> dict[str, int]:
+                    return {"/main.py": size_bytes}
+
+                def sync_delete_file(self, path: str) -> bool:
+                    raise AssertionError("delete should not run when nothing changed")
+
+                def sync_mkdir(self, path: str) -> bool:
+                    raise AssertionError("mkdir should not run when nothing changed")
+
+                def sync_enter_raw_repl(self) -> None:
+                    raise AssertionError("upload should not start when nothing changed")
+
+                def sync_put_raw(self, local_path: pathlib.Path, remote_path: str) -> None:
+                    raise AssertionError("upload should not run when nothing changed")
+
+                def sync_exit_raw_repl(self) -> None:
+                    pass
+
+            progress_lines: list[str] = []
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            controller = FakeController()
+            session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+            session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+            result = session.sync_folder(
+                port=None,
+                local_folder=str(root),
+                remote_folder="/",
+                delete_extraneous=True,
+                progress_callback=progress_lines.append,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["filesSynced"], 0)
+            self.assertEqual(result["filesSkipped"], 1)
+            self.assertIn("Unchanged : 1 file(s)", "\n".join(progress_lines))
+
+    def test_sync_folder_delete_extraneous_removes_stale_remote_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            file_path = root / "main.py"
+            file_path.write_text("print('ok')\n", encoding="utf-8")
+            size_bytes = file_path.stat().st_size
+
+            class FakeController:
+                def __init__(self) -> None:
+                    self.port = "COM_TEST"
+                    self.deleted_paths: list[str] = []
+
+                def sync_get_file_sizes(self, remote_root: str, timeout: float = 0.0) -> dict[str, int]:
+                    return {
+                        "/main.py": size_bytes,
+                        "/old.py": 3,
+                    }
+
+                def sync_delete_file(self, path: str) -> bool:
+                    self.deleted_paths.append(path)
+                    return True
+
+                def sync_mkdir(self, path: str) -> bool:
+                    raise AssertionError("mkdir should not run when nothing changed")
+
+                def sync_put_raw(self, local_path: pathlib.Path, remote_path: str) -> None:
+                    raise AssertionError("upload should not run when only stale files are deleted")
+
+                def sync_exit_raw_repl(self) -> None:
+                    pass
+
+            progress_lines: list[str] = []
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            controller = FakeController()
+            session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+            session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+            result = session.sync_folder(
+                port=None,
+                local_folder=str(root),
+                remote_folder="/",
+                delete_extraneous=True,
+                progress_callback=progress_lines.append,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["filesSynced"], 0)
+            self.assertEqual(result["filesSkipped"], 1)
+            self.assertEqual(result["filesDeleted"], 1)
+            self.assertEqual(controller.deleted_paths, ["/old.py"])
+            self.assertIn("Deleting 1 stale file(s)…", "\n".join(progress_lines))
+
+    def test_sync_folder_size_scan_uploads_only_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            local_sizes: dict[str, int] = {}
+            missing_path = "/f39.py"
+            for index in range(40):
+                file_path = root / f"f{index}.py"
+                file_path.write_text(f"print({index})\n", encoding="utf-8")
+                local_sizes[f"/f{index}.py"] = file_path.stat().st_size
+
+            class FakeController:
+                def __init__(self) -> None:
+                    self.port = "COM_TEST"
+                    self.scan_calls = 0
+                    self.upload_calls: list[str] = []
+
+                def sync_get_file_sizes(self, remote_root: str, timeout: float = 0.0) -> dict[str, int]:
+                    self.scan_calls += 1
+                    return {
+                        remote_path: size
+                        for remote_path, size in local_sizes.items()
+                        if remote_path != missing_path
+                    }
+
+                def sync_delete_file(self, path: str) -> bool:
+                    raise AssertionError("delete should not run when remote has no extra files")
+
+                def sync_mkdir(self, path: str) -> bool:
+                    return True
+
+                def sync_enter_raw_repl(self) -> None:
+                    pass
+
+                def sync_put_raw(self, local_path: pathlib.Path, remote_path: str) -> None:
+                    self.upload_calls.append(remote_path)
+
+                def sync_exit_raw_repl(self) -> None:
+                    pass
+
+            progress_lines: list[str] = []
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            controller = FakeController()
+            session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+            session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+            result = session.sync_folder(
+                port=None,
+                local_folder=str(root),
+                remote_folder="/",
+                delete_extraneous=True,
+                progress_callback=progress_lines.append,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["filesSynced"], 1)
+            self.assertEqual(result["filesSkipped"], 39)
+            self.assertEqual(controller.scan_calls, 1)
+            self.assertEqual(controller.upload_calls, ["f39.py"])
+            self.assertIn("To upload : 1 file(s)", "\n".join(progress_lines))
+
+    def test_sync_folder_uploads_with_relative_device_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            file_path = root / "main.py"
+            file_path.write_text("print('ok')\n", encoding="utf-8")
+
+            class FakeController:
+                def __init__(self) -> None:
+                    self.port = "COM_TEST"
+                    self.mkdir_calls: list[str] = []
+                    self.upload_calls: list[str] = []
+
+                def sync_get_file_sizes(self, remote_root: str, timeout: float = 0.0) -> dict[str, int]:
+                    return {}
+
+                def sync_get_file_signatures(self, remote_paths: list[str], timeout: float = 0.0) -> dict[str, str | None]:
+                    return {}
+
+                def sync_delete_file(self, path: str) -> bool:
+                    raise AssertionError("delete should not run for upload-only sync")
+
+                def sync_mkdir(self, path: str) -> bool:
+                    self.mkdir_calls.append(path)
+                    return True
+
+                def sync_enter_raw_repl(self) -> None:
+                    pass
+
+                def sync_put_raw(self, local_path: pathlib.Path, remote_path: str) -> None:
+                    self.upload_calls.append(remote_path)
+
+                def sync_exit_raw_repl(self) -> None:
+                    pass
+
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            controller = FakeController()
+            session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+            session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+            result = session.sync_folder(
+                port=None,
+                local_folder=str(root),
+                remote_folder="/apps",
+                delete_extraneous=False,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(controller.mkdir_calls, ["apps"])
+            self.assertEqual(controller.upload_calls, ["apps/main.py"])
+
+    def test_sync_folder_directory_failure_becomes_warning_when_upload_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            file_path = root / "main.py"
+            file_path.write_text("print('ok')\n", encoding="utf-8")
+
+            class FakeController:
+                def __init__(self) -> None:
+                    self.port = "COM_TEST"
+                    self.upload_calls: list[str] = []
+
+                def sync_get_file_sizes(self, remote_root: str, timeout: float = 0.0) -> dict[str, int]:
+                    return {}
+
+                def sync_get_file_signatures(self, remote_paths: list[str], timeout: float = 0.0) -> dict[str, str | None]:
+                    return {}
+
+                def sync_delete_file(self, path: str) -> bool:
+                    raise AssertionError("delete should not run for upload-only sync")
+
+                def sync_mkdir(self, path: str) -> bool:
+                    return False
+
+                def sync_enter_raw_repl(self) -> None:
+                    pass
+
+                def sync_put_raw(self, local_path: pathlib.Path, remote_path: str) -> None:
+                    self.upload_calls.append(remote_path)
+
+                def sync_exit_raw_repl(self) -> None:
+                    pass
+
+            progress_lines: list[str] = []
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            controller = FakeController()
+            session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+            session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+            result = session.sync_folder(
+                port=None,
+                local_folder=str(root),
+                remote_folder="/apps",
+                delete_extraneous=False,
+                progress_callback=progress_lines.append,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["directoriesFailed"], 0)
+            self.assertEqual(result["directoriesWarnings"], 1)
+            self.assertEqual(controller.upload_calls, ["apps/main.py"])
+            self.assertIn("Treating as warning", "\n".join(progress_lines))
+
+    def test_sync_folder_reconnects_before_retrying_failed_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            file_path = root / "main.py"
+            file_path.write_text("print('ok')\n", encoding="utf-8")
+
+            class FakeController:
+                def __init__(self) -> None:
+                    self.port = "COM_TEST"
+                    self.raw_enter_calls = 0
+                    self.exit_calls = 0
+                    self.reconnect_calls = 0
+                    self.upload_calls: list[str] = []
+
+                def sync_get_file_sizes(self, remote_root: str, timeout: float = 0.0) -> dict[str, int]:
+                    return {}
+
+                def sync_get_file_signatures(self, remote_paths: list[str], timeout: float = 0.0) -> dict[str, str | None]:
+                    return {}
+
+                def sync_delete_file(self, path: str) -> bool:
+                    raise AssertionError("delete should not run for upload-only sync")
+
+                def sync_mkdir(self, path: str) -> bool:
+                    return True
+
+                def sync_enter_raw_repl(self) -> None:
+                    self.raw_enter_calls += 1
+
+                def sync_exit_raw_repl(self) -> None:
+                    self.exit_calls += 1
+
+                def sync_reconnect(self, delay_seconds: float = 0.0) -> None:
+                    self.reconnect_calls += 1
+
+                def sync_put_raw(self, local_path: pathlib.Path, remote_path: str) -> None:
+                    self.upload_calls.append(remote_path)
+                    if len(self.upload_calls) == 1:
+                        raise backend.ControllerError("serial write stalled")
+
+            progress_lines: list[str] = []
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            controller = FakeController()
+            session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+            session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+            result = session.sync_folder(
+                port=None,
+                local_folder=str(root),
+                remote_folder="/",
+                delete_extraneous=False,
+                progress_callback=progress_lines.append,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["filesSynced"], 1)
+            self.assertEqual(controller.reconnect_calls, 1)
+            self.assertEqual(controller.raw_enter_calls, 2)
+            self.assertEqual(controller.upload_calls, ["main.py", "main.py"])
+            self.assertIn("after connection reset", "\n".join(progress_lines))
+
+    def test_clear_all_files_recreates_empty_boot_py_after_cleanup(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_TEST"
+                self.put_calls: list[tuple[str, bytes]] = []
+                self.exit_calls = 0
+                self._in_raw_repl = True
+
+            def sync_clear_all(self, timeout: float = 0.0) -> str:
+                self.timeout = timeout
+                return (
+                    "CLEANUP_START\n"
+                    "FILE_DEL:boot.py\n"
+                    "FILE_DEL:apps/demo.py\n"
+                    "DIR_DEL:apps\n"
+                    "FILE_ERR:busy.log busy\n"
+                    "CLEANUP_DONE\n"
+                )
+
+            def sync_put_content(self, remote_path: str, data: bytes, timeout: float | None = None) -> None:
+                self.put_calls.append((remote_path, data))
+
+            def sync_exit_raw_repl(self) -> None:
+                self.exit_calls += 1
+                self._in_raw_repl = False
+
+        progress_lines: list[str] = []
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+        result = session.clear_all_files(
+            port=None,
+            progress_callback=progress_lines.append,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["filesDeleted"], 2)
+        self.assertEqual(result["directoriesDeleted"], 1)
+        self.assertEqual(result["warningsReported"], 1)
+        self.assertTrue(result["bootCreated"])
+        self.assertEqual(controller.put_calls, [("boot.py", b"")])
+        self.assertEqual(controller.exit_calls, 1)
+        self.assertIn("Deleted file: boot.py", "\n".join(progress_lines))
+        self.assertIn("Creating empty boot.py…", "\n".join(progress_lines))
+
+    def test_write_bytes_sends_full_payload_when_serial_write_is_partial(self) -> None:
+        class FakeConn:
+            def __init__(self) -> None:
+                self.accepted = bytearray()
+                self.flush_calls = 0
+
+            def write(self, data: bytes) -> int:
+                chunk = bytes(data)
+                if not chunk:
+                    return 0
+                count = min(3, len(chunk))
+                self.accepted.extend(chunk[:count])
+                return count
+
+            def flush(self) -> None:
+                self.flush_calls += 1
+
+        dummy = type("DummyController", (), {})()
+        dummy._conn = FakeConn()
+        dummy._write_lock = threading.Lock()
+        dummy._ensure_active = lambda: None
+
+        backend.MicroPythonController._write_bytes(dummy, b"abcdef", flush=True)
+
+        self.assertEqual(bytes(dummy._conn.accepted), b"abcdef")
+        self.assertEqual(dummy._conn.flush_calls, 1)
+
+    def test_sync_put_raw_raises_when_device_reports_traceback_in_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = pathlib.Path(tmp) / "main.py"
+            local_path.write_text("print('ok')\n", encoding="utf-8")
+
+            class Dummy:
+                def __init__(self) -> None:
+                    self._in_raw_repl = True
+                    self.exec_calls: list[str] = []
+
+                def _sync_reset_input_buffer(self) -> None:
+                    pass
+
+                def _exec_raw_no_follow(self, source: str) -> None:
+                    self.exec_calls.append(source)
+
+                def _raw_follow(
+                    self,
+                    timeout: float | None,
+                    line_callback=None,
+                    cancel_event=None,
+                ) -> tuple[bytes, bytes, bool]:
+                    return (b"", b"Traceback (most recent call last):\nOSError: [Errno 2]\n", False)
+
+            dummy = Dummy()
+            with self.assertRaises(backend.ControllerError):
+                backend.MicroPythonController.sync_put_raw(dummy, local_path, "apps/main.py")
+
+            self.assertEqual(len(dummy.exec_calls), 1)
+            self.assertIn('f = open("apps/main.py", "wb")', dummy.exec_calls[0])
+
+
+class WorkspaceOperationTests(unittest.TestCase):
+    def test_device_put_file_script_uses_real_newlines(self) -> None:
+        script = backend._device_put_file_script("/apps/main.py", b"print(123)\n")
+        self.assertIn("\r\n", script)
+        self.assertNotIn("\\r\\n", script)
+        self.assertIn("_f.write", script)
+
+    def test_sync_read_file_bytes_uses_safe_workspace_chunk_size(self) -> None:
+        class Dummy:
+            def __init__(self) -> None:
+                self.exec_calls: list[str] = []
+
+            def sync_exec_raw_and_read(self, code: str, timeout: float = 0.0) -> str:
+                self.exec_calls.append(code)
+                return "HEX:6869\nFILE_READ_DONE\n"
+
+            def sync_enter_friendly_repl(self) -> None:
+                raise AssertionError("friendly fallback should not be used")
+
+            def sync_exec_friendly_and_read(self, code: str, timeout: float = 0.0) -> str:
+                raise AssertionError("friendly fallback should not be used")
+
+        dummy = Dummy()
+        result = backend.MicroPythonController.sync_read_file_bytes(dummy, "/apps/main.py", timeout=1.0)
+
+        self.assertEqual(result, b"hi")
+        self.assertEqual(len(dummy.exec_calls), 1)
+        self.assertIn(f"_f.read({backend.WORKSPACE_READ_FILE_CHUNK_BYTES})", dummy.exec_calls[0])
+
+    def test_device_stat_path_script_uses_expected_markers(self) -> None:
+        script = backend._device_stat_path_script("/apps/main.py")
+        self.assertIn("os.stat(_path)", script)
+        self.assertIn("STAT:", script)
+        self.assertIn("STATERR", script)
+
+    def test_device_list_directory_script_uses_expected_markers(self) -> None:
+        script = backend._device_list_directory_stream_script("/apps")
+        self.assertIn("os.ilistdir(_path)", script)
+        self.assertIn("ENTRY:", script)
+        self.assertIn("LIST_DONE", script)
+        self.assertIn("LISTERR", script)
+
+    def test_device_delete_path_script_supports_recursive_delete(self) -> None:
+        script = backend._device_delete_path_script("/apps", recursive=True)
+        self.assertIn("_recursive = True", script)
+        self.assertIn("os.rmdir(_path)", script)
+        self.assertIn("DELOK:D", script)
+        self.assertIn("DELERR", script)
+
+    def test_device_rename_path_script_uses_expected_markers(self) -> None:
+        script = backend._device_rename_path_script("/apps/a.py", "/apps/b.py")
+        self.assertIn("os.rename(_old, _new)", script)
+        self.assertIn("RENAME_OK", script)
+        self.assertIn("RENAMEERR", script)
+
+    def test_parse_workspace_error_payload_maps_errno(self) -> None:
+        error = backend._parse_workspace_error_payload("2:no such file")
+        self.assertIsInstance(error, backend.WorkspaceOperationError)
+        self.assertEqual(error.code, "ENOENT")
+        self.assertEqual(str(error), "no such file")
+
+    def test_parse_device_stat_output_returns_file_metadata(self) -> None:
+        parsed = backend._parse_device_stat_output("STAT:F:42:1700:1600\n", remote_path="/apps/main.py")
+        self.assertEqual(
+            parsed,
+            {
+                "path": "/apps/main.py",
+                "kind": "file",
+                "size": 42,
+                "mtime": 1700,
+                "ctime": 1600,
+            },
+        )
+
+    def test_parse_device_list_directory_output_reads_entries(self) -> None:
+        parsed = backend._parse_device_list_directory_output(
+            "ENTRY:9:/apps/lib:D:0:10\nENTRY:13:/apps/main.py:F:42:11\nLIST_DONE\n"
+        )
+        self.assertEqual(
+            parsed,
+            [
+                {
+                    "name": "lib",
+                    "path": "/apps/lib",
+                    "kind": "directory",
+                    "size": 0,
+                    "mtime": 10,
+                    "ctime": 10,
+                },
+                {
+                    "name": "main.py",
+                    "path": "/apps/main.py",
+                    "kind": "file",
+                    "size": 42,
+                    "mtime": 11,
+                    "ctime": 11,
+                },
+            ],
+        )
+
+    def test_workspace_read_file_returns_base64_payload(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_TEST"
+
+            def sync_stat_path(self, remote_path: str, timeout: float = 0.0) -> dict[str, object]:
+                self.stat_call = (remote_path, timeout)
+                return {
+                    "path": remote_path,
+                    "kind": "file",
+                    "size": 5,
+                    "mtime": 0,
+                    "ctime": 0,
+                }
+
+            def sync_read_file_bytes(self, remote_path: str, timeout: float = 0.0) -> bytes:
+                self.read_call = (remote_path, timeout)
+                return b"hello"
+
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+        result = session.workspace_read_file(port=None, remote_path="apps/main.py")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remotePath"], "/apps/main.py")
+        self.assertEqual(result["size"], 5)
+        self.assertEqual(result["contentBase64"], base64.b64encode(b"hello").decode("ascii"))
+        self.assertEqual(controller.stat_call[0], "/apps/main.py")
+        self.assertEqual(controller.read_call[0], "/apps/main.py")
+
+    def test_workspace_write_file_writes_bytes_after_parent_check(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_TEST"
+                self.put_calls: list[tuple[str, bytes]] = []
+
+            def sync_stat_path(self, remote_path: str, timeout: float = 0.0) -> dict[str, object]:
+                if remote_path == "/apps":
+                    return {"path": remote_path, "kind": "directory", "size": 0, "mtime": 0, "ctime": 0}
+                if remote_path == "/apps/main.py":
+                    raise backend.WorkspaceOperationError("missing", code="ENOENT")
+                raise AssertionError(f"unexpected stat path {remote_path}")
+
+            def sync_put_content(self, remote_path: str, data: bytes, timeout: float | None = None) -> None:
+                self.put_calls.append((remote_path, data))
+
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+        result = session.workspace_write_file(
+            port=None,
+            remote_path="/apps/main.py",
+            content_base64=base64.b64encode(b"print('ok')\n").decode("ascii"),
+            create=True,
+            overwrite=False,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remotePath"], "/apps/main.py")
+        self.assertEqual(result["size"], len(b"print('ok')\n"))
+        self.assertEqual(controller.put_calls, [("/apps/main.py", b"print('ok')\n")])
+
+    def test_workspace_rename_surfaces_eexist_when_target_exists(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_TEST"
+
+            def sync_stat_path(self, remote_path: str, timeout: float = 0.0) -> dict[str, object]:
+                if remote_path == "/apps/a.py":
+                    return {"path": remote_path, "kind": "file", "size": 1, "mtime": 0, "ctime": 0}
+                if remote_path == "/apps":
+                    return {"path": remote_path, "kind": "directory", "size": 0, "mtime": 0, "ctime": 0}
+                if remote_path == "/apps/b.py":
+                    return {"path": remote_path, "kind": "file", "size": 1, "mtime": 0, "ctime": 0}
+                raise AssertionError(f"unexpected stat path {remote_path}")
+
+            def sync_delete_path(self, remote_path: str, recursive: bool, timeout: float = 0.0) -> str:
+                raise AssertionError("delete should not run when overwrite is false")
+
+            def sync_rename_path(self, old_path: str, new_path: str, timeout: float = 0.0) -> None:
+                raise AssertionError("rename should not run when overwrite is false")
+
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+        result = session.workspace_rename(
+            port=None,
+            old_path="/apps/a.py",
+            new_path="/apps/b.py",
+            overwrite=False,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "EEXIST")
+        self.assertIn("Path already exists", result["error"])
+
+    def test_workspace_delete_returns_deleted_kind(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_TEST"
+
+            def sync_stat_path(self, remote_path: str, timeout: float = 0.0) -> dict[str, object]:
+                return {"path": remote_path, "kind": "directory", "size": 0, "mtime": 0, "ctime": 0}
+
+            def sync_delete_path(self, remote_path: str, recursive: bool, timeout: float = 0.0) -> str:
+                self.delete_call = (remote_path, recursive, timeout)
+                return "directory"
+
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+        result = session.workspace_delete(port=None, remote_path="/apps", recursive=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["kind"], "directory")
+        self.assertEqual(controller.delete_call[0], "/apps")
+        self.assertTrue(controller.delete_call[1])
+
+
+class FirmwareBootloaderTests(unittest.TestCase):
+    def test_request_bootloader_sends_machine_bootloader_command(self) -> None:
+        class Dummy:
+            def __init__(self) -> None:
+                self._in_raw_repl = False
+                self.enter_calls = 0
+                self.exec_calls: list[str] = []
+
+            def _drain_serial_input(self) -> None:
+                pass
+
+            def _enter_raw_repl(self, timeout_overall: float = 0.0) -> None:
+                self.enter_calls += 1
+                self._in_raw_repl = True
+
+            def _exec_raw_no_follow(self, code: str) -> None:
+                self.exec_calls.append(code)
+
+        dummy = Dummy()
+        backend.MicroPythonController.request_bootloader(dummy)
+
+        self.assertEqual(dummy.enter_calls, 1)
+        self.assertEqual(dummy.exec_calls, ["import machine\r\nmachine.bootloader()\r\n"])
+        self.assertFalse(dummy._in_raw_repl)
+
+    def test_persistent_session_request_bootloader_uses_active_session(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_TEST"
+                self.calls = 0
+
+            def request_bootloader(self) -> None:
+                self.calls += 1
+
+        progress_lines: list[str] = []
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._controller = controller  # type: ignore[assignment]
+        session._port = "COM_TEST"
+        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+        result = session.request_bootloader(port="COM_TEST", progress_callback=progress_lines.append)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["prepared"])
+        self.assertEqual(result["port"], "COM_TEST")
+        self.assertEqual(controller.calls, 1)
+        self.assertEqual(progress_lines, ["Requesting bootloader mode via active MicroPython session on COM_TEST..."])
+
+    def test_persistent_session_request_bootloader_skips_mismatched_port(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_OPEN"
+                self.calls = 0
+
+            def request_bootloader(self) -> None:
+                self.calls += 1
+
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._controller = controller  # type: ignore[assignment]
+        session._port = "COM_OPEN"
+
+        result = session.request_bootloader(port="COM_OTHER")
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["prepared"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["sessionPort"], "COM_OPEN")
+        self.assertEqual(controller.calls, 0)
+
+    def test_wait_for_bootloader_ready_accepts_same_port_without_reset_signal(self) -> None:
+        original_scan = backend._scan_esp_ports
+        original_build = backend._build_esptool_boot_cmd
+        original_run = backend._run_esptool
+        original_wait = backend._wait_for_esp_port
+
+        seen_cmds: list[list[str]] = []
+
+        def fake_build(
+            port: str,
+            baudrate: int = backend.FIRMWARE_FLASH_BAUDRATE,
+            before: str = "no-reset",
+            after: str = "no-reset",
+            chip: str = backend.FIRMWARE_FLASH_CHIP,
+            connect_attempts: int = backend.FIRMWARE_FLASH_CONNECT_ATTEMPTS,
+        ) -> list[str]:
+            return [port, str(baudrate), before, after, chip, str(connect_attempts)]
+
+        try:
+            backend._scan_esp_ports = lambda: ["COM_TEST"]  # type: ignore[assignment]
+            backend._build_esptool_boot_cmd = fake_build  # type: ignore[assignment]
+            backend._run_esptool = lambda cmd, progress_callback=None: seen_cmds.append(cmd)  # type: ignore[assignment]
+            backend._wait_for_esp_port = lambda preferred, progress_callback=None: preferred  # type: ignore[assignment]
+
+            confirmed_port = backend._wait_for_bootloader_ready(
+                "COM_TEST",
+                timeout_seconds=0.2,
+                require_port_reset=False,
+            )
+        finally:
+            backend._scan_esp_ports = original_scan  # type: ignore[assignment]
+            backend._build_esptool_boot_cmd = original_build  # type: ignore[assignment]
+            backend._run_esptool = original_run  # type: ignore[assignment]
+            backend._wait_for_esp_port = original_wait  # type: ignore[assignment]
+
+        self.assertEqual(confirmed_port, "COM_TEST")
+        self.assertEqual(len(seen_cmds), 1)
+        self.assertEqual(seen_cmds[0][0], "COM_TEST")
+        self.assertEqual(seen_cmds[0][2:4], ["no-reset", "no-reset"])
+
+    def test_flash_firmware_bundle_uses_no_reset_when_bootloader_ready(self) -> None:
+        original_detect = backend._detect_initial_flash_port
+        original_run = backend._run_esptool_with_connect_retries
+
+        observed: dict[str, object] = {}
+
+        def fake_run(
+            image_pairs: list[tuple[str, pathlib.Path]],
+            port: str,
+            progress_callback=None,
+            before_modes: tuple[str, ...] | None = None,
+            after_mode: str = backend.FIRMWARE_FLASH_AFTER,
+        ) -> str:
+            observed["port"] = port
+            observed["before_modes"] = before_modes
+            observed["image_pairs"] = image_pairs
+            observed["after_mode"] = after_mode
+            return port
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bootloader = root / "bootloader.bin"
+            partition = root / "partition-table.bin"
+            ota = root / "ota.bin"
+            calos = root / "micropython.bin"
+            for path in (bootloader, partition, ota, calos):
+                path.write_bytes(b"ok")
+
+            try:
+                backend._detect_initial_flash_port = lambda preferred, progress_callback=None: "COM_TEST"  # type: ignore[assignment]
+                backend._run_esptool_with_connect_retries = fake_run  # type: ignore[assignment]
+
+                result = backend.flash_firmware_bundle(
+                    port="COM_TEST",
+                    bootloader_path=str(bootloader),
+                    calos_path=str(calos),
+                    partition_table_path=str(partition),
+                    ota_data_path=str(ota),
+                    bootloader_ready=True,
+                )
+            finally:
+                backend._detect_initial_flash_port = original_detect  # type: ignore[assignment]
+                backend._run_esptool_with_connect_retries = original_run  # type: ignore[assignment]
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(observed["port"], "COM_TEST")
+        self.assertEqual(observed["before_modes"], ("no-reset",))
+
+    def test_erase_chip_uses_no_reset_when_bootloader_ready(self) -> None:
+        original_detect = backend._detect_initial_flash_port
+        original_run = backend._run_esptool_erase_with_connect_retries
+
+        observed: dict[str, object] = {}
+
+        def fake_run(
+            port: str,
+            progress_callback=None,
+            before_modes: tuple[str, ...] | None = None,
+            after_mode: str = backend.FIRMWARE_FLASH_AFTER,
+        ) -> str:
+            observed["port"] = port
+            observed["before_modes"] = before_modes
+            observed["after_mode"] = after_mode
+            return port
+
+        try:
+            backend._detect_initial_flash_port = lambda preferred, progress_callback=None: "COM_TEST"  # type: ignore[assignment]
+            backend._run_esptool_erase_with_connect_retries = fake_run  # type: ignore[assignment]
+
+            result = backend.erase_chip(
+                port="COM_TEST",
+                bootloader_ready=True,
+            )
+        finally:
+            backend._detect_initial_flash_port = original_detect  # type: ignore[assignment]
+            backend._run_esptool_erase_with_connect_retries = original_run  # type: ignore[assignment]
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(observed["port"], "COM_TEST")
+        self.assertEqual(observed["before_modes"], ("no-reset",))
+
+
+if __name__ == "__main__":
+    unittest.main()
