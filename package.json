@@ -2,7 +2,7 @@
   "name": "micropython-vscode-extension",
   "displayName": "MicroPython",
   "description": "General MicroPython device extension for persistent REPL access and remote workspace file management.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "do-exe",
   "author": "do-exe",
   "license": "MIT",
