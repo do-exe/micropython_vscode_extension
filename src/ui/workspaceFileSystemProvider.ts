@@ -85,6 +85,52 @@ export function getMicroPythonWorkspaceErrorCode(error: unknown): WorkspaceError
   return typeof code === "string" ? (code as WorkspaceErrorCode) : undefined;
 }
 
+export function isMicroPythonWorkspaceFileNotFoundError(error: unknown): boolean {
+  if (getMicroPythonWorkspaceErrorCode(error) === "ENOENT") {
+    return true;
+  }
+
+  if (error instanceof vscode.FileSystemError) {
+    const fileSystemCode = typeof error.code === "string" ? error.code : undefined;
+    return fileSystemCode === "FileNotFound" || /(?:file not found|enoent)/i.test(error.message);
+  }
+
+  return error instanceof Error && /(?:file not found|enoent)/i.test(error.message);
+}
+
+function workspaceErrorDescription(code: WorkspaceErrorCode | undefined): string | undefined {
+  switch (code) {
+    case "ENOENT":
+      return "The file or folder does not exist on the device.";
+    case "EEXIST":
+      return "A file or folder with that name already exists on the device.";
+    case "ENOTDIR":
+      return "A parent path is a file, not a folder.";
+    case "EISDIR":
+      return "That path is a folder, not a file.";
+    case "ENOTEMPTY":
+      return "The folder is not empty.";
+    case "ENOSPC":
+      return "The MicroPython device storage is full.";
+    case "EPERM":
+      return "The MicroPython device denied that filesystem operation.";
+    case "EINVAL":
+      return "The MicroPython workspace path or operation is invalid.";
+    default:
+      return undefined;
+  }
+}
+
+function workspaceErrorMessage(error: unknown): string {
+  const code = getMicroPythonWorkspaceErrorCode(error);
+  const friendly = workspaceErrorDescription(code);
+  const detail = error instanceof Error ? error.message.trim() : "";
+  if (friendly && detail && !detail.includes(friendly)) {
+    return `${friendly} (${detail})`;
+  }
+  return friendly || detail || "MicroPython workspace operation failed.";
+}
+
 export function getMicroPythonWorkspaceParentUri(uri: vscode.Uri): vscode.Uri {
   const { port, remotePath } = parseMicroPythonWorkspaceUri(uri);
   const parentPath = remotePath === "/" ? "/" : normalizeMicroPythonRemotePath(path.posix.dirname(remotePath));
@@ -260,10 +306,7 @@ export class MicroPythonWorkspaceFileSystemProvider implements vscode.FileSystem
       await this.handlers.stat(uri);
       return true;
     } catch (error) {
-      if (getMicroPythonWorkspaceErrorCode(error) === "ENOENT") {
-        return false;
-      }
-      if (error instanceof vscode.FileSystemError && /File not found/i.test(error.message)) {
+      if (isMicroPythonWorkspaceFileNotFoundError(error)) {
         return false;
       }
       throw this.asFileSystemError(error);
@@ -275,9 +318,7 @@ export class MicroPythonWorkspaceFileSystemProvider implements vscode.FileSystem
       return error;
     }
 
-    const message = error instanceof Error && error.message.trim().length > 0
-      ? error.message
-      : "MicroPython workspace operation failed.";
+    const message = workspaceErrorMessage(error);
 
     switch (getMicroPythonWorkspaceErrorCode(error)) {
       case "ENOENT":

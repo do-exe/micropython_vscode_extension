@@ -26,6 +26,8 @@ import {
   type WorkspaceImportResult,
   type WorkspaceRenameResult,
   type WorkspaceStatResult,
+  type WorkspaceStatVfsResult,
+  type WorkspaceSyncResult,
   type WorkspaceTreeResult,
   type WorkspaceWriteFileResult,
 } from "../core/shared";
@@ -264,6 +266,13 @@ export class BackendServiceClient implements vscode.Disposable {
     });
   }
 
+  public async statWorkspaceFileSystem(port: string, remotePath: string): Promise<WorkspaceStatVfsResult> {
+    return this.request<WorkspaceStatVfsResult>("workspace.statvfs", {
+      port,
+      remotePath,
+    });
+  }
+
   public async readWorkspaceFile(port: string, remotePath: string): Promise<WorkspaceFileResult> {
     return this.request<WorkspaceFileResult>("workspace.read-file", {
       port,
@@ -320,6 +329,10 @@ export class BackendServiceClient implements vscode.Disposable {
       newPath,
       overwrite,
     });
+  }
+
+  public async syncWorkspaceFileSystem(port: string): Promise<WorkspaceSyncResult> {
+    return this.request<WorkspaceSyncResult>("workspace.sync", { port });
   }
 
   private async request<T>(

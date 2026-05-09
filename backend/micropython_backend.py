@@ -130,11 +130,13 @@ COMMAND_PRIORITY = {
     "workspace.scan-tree": 11,
     "workspace.list-directory": 11,
     "workspace.stat": 11,
+    "workspace.statvfs": 11,
     "workspace.read-file": 11,
     "workspace.write-file": 11,
     "workspace.create-directory": 11,
     "workspace.delete": 11,
     "workspace.rename": 11,
+    "workspace.sync": 11,
     "workspace.import": 11,
     "soft-reset": 20,
     "session.close": 25,
@@ -1268,6 +1270,43 @@ class MicroPythonController:
 
         return _parse_device_list_directory_output(raw)
 
+    def sync_statvfs_path(
+        self,
+        remote_path: str,
+        timeout: float = SYNC_DIR_COMMAND_TIMEOUT_SEC,
+    ) -> dict[str, Any]:
+        stream_code = _device_statvfs_script(remote_path)
+        raw = ""
+        last_error: Exception | None = None
+
+        for attempt in range(2):
+            try:
+                raw = self.sync_exec_raw_and_read(stream_code, timeout=timeout)
+                last_error = None
+                break
+            except ControllerError as exc:
+                last_error = exc
+                if attempt == 0:
+                    self.sync_enter_friendly_repl()
+                    continue
+                break
+
+        if last_error is not None:
+            try:
+                friendly_raw = self.sync_exec_friendly_and_read(stream_code, timeout=timeout)
+                return _parse_device_statvfs_output(friendly_raw, remote_path=remote_path)
+            except Exception as friendly_exc:
+                raise ControllerError(
+                    f"{last_error} | friendly statvfs failed for {remote_path}: {friendly_exc}"
+                ) from friendly_exc
+
+        return _parse_device_statvfs_output(raw, remote_path=remote_path)
+
+    def sync_filesystem(self, timeout: float = SYNC_DIR_COMMAND_TIMEOUT_SEC) -> bool:
+        stream_code = _device_sync_script()
+        raw = self.sync_exec_raw_and_read(stream_code, timeout=timeout)
+        return _parse_device_sync_output(raw)
+
     def sync_mkdir(self, path: str) -> bool:
         target = json.dumps(path)
         code = (
@@ -1390,6 +1429,10 @@ class MicroPythonController:
         )
         if "Traceback" in result:
             raise ControllerError(result.strip())
+        for raw_line in result.replace("\r", "\n").split("\n"):
+            line = raw_line.strip()
+            if line.startswith("PUTERR:"):
+                raise _parse_workspace_error_payload(line[len("PUTERR:") :])
         if "OK" not in result:
             preview = result.strip()
             raise ControllerError(f"No OK confirmation: {preview[:200]}")
@@ -1406,18 +1449,31 @@ class MicroPythonController:
 
         lines = [
             "import os",
+            "def _emit_err(_prefix, _exc):",
+            "    _errno = getattr(_exc, 'errno', None)",
+            "    if _errno is None:",
+            "        try:",
+            "            _errno = int(_exc.args[0]) if getattr(_exc, 'args', None) else None",
+            "        except:",
+            "            _errno = None",
+            "    print(_prefix + ':' + ('' if _errno is None else str(_errno)) + ':' + str(_exc))",
             "try:",
-            f"    os.remove({json.dumps(remote_path)})",
-            "except OSError:",
-            "    pass",
-            f"f = open({json.dumps(remote_path)}, \"wb\")",
+            "    try:",
+            f"        os.remove({json.dumps(remote_path)})",
+            "    except OSError:",
+            "        pass",
+            f"    f = open({json.dumps(remote_path)}, \"wb\")",
+            "    try:",
         ]
         for index in range(num_chunks):
             chunk = data[index * SYNC_FILE_SCRIPT_CHUNK_BYTES : (index + 1) * SYNC_FILE_SCRIPT_CHUNK_BYTES]
-            lines.append(f"f.write({repr(chunk)})")
+            lines.append(f"        f.write({repr(chunk)})")
         lines.extend([
-            "f.close()",
-            'print("OK")',
+            "    finally:",
+            "        f.close()",
+            '    print("OK")',
+            "except Exception as _exc:",
+            "    _emit_err('PUTERR', _exc)",
         ])
 
         code = "\r\n".join(lines) + "\r\n"
@@ -1437,6 +1493,10 @@ class MicroPythonController:
         stdout_text = output.decode("utf-8", errors="replace")
         if "Traceback" in stdout_text:
             raise ControllerError(stdout_text.strip())
+        for raw_line in stdout_text.replace("\r", "\n").split("\n"):
+            line = raw_line.strip()
+            if line.startswith("PUTERR:"):
+                raise _parse_workspace_error_payload(line[len("PUTERR:") :])
         if "OK" not in stdout_text:
             preview = stdout_text.strip()
             raise ControllerError(f"No OK confirmation: {preview[:200]}")
@@ -2202,6 +2262,9 @@ class PersistentSession:
                     )
                     directory_failures = []
 
+                if deleted_count > 0 or uploaded_count > 0 or required_dirs:
+                    _safe_sync_filesystem(controller)
+
                 ok = not upload_failures and not delete_failures and not directory_failures
                 error_summary = ""
                 if ok:
@@ -2337,6 +2400,7 @@ class PersistentSession:
 
                 report("Creating empty boot.py…")
                 controller.sync_put_content("boot.py", b"")
+                _safe_sync_filesystem(controller)
                 report("Empty boot.py created ✓")
 
                 warning_count = len(cleanup_summary["warningLines"])
@@ -2618,6 +2682,143 @@ class PersistentSession:
 
         return payload
 
+    def workspace_statvfs(self, port: str | None, remote_path: str) -> dict[str, Any]:
+        normalized_remote_path = _sync_device_absolute_path(remote_path)
+        if port:
+            opened = self.open(port)
+            if not opened.get("ok"):
+                return {
+                    "ok": False,
+                    "port": port,
+                    "remotePath": normalized_remote_path,
+                    "error": opened.get("error", "Failed to open session."),
+                }
+
+        with self._operation_lock:
+            try:
+                controller, pause_requested = self._begin_exclusive_operation()
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "port": port or "",
+                    "remotePath": normalized_remote_path,
+                    "code": _workspace_exception_code(exc),
+                    "error": str(exc),
+                }
+
+            payload: dict[str, Any]
+            recovery_payload: dict[str, Any] | None = None
+            try:
+                statvfs = controller.sync_statvfs_path(
+                    normalized_remote_path,
+                    timeout=SYNC_DIR_COMMAND_TIMEOUT_SEC,
+                )
+                payload = {
+                    "ok": True,
+                    "port": controller.port,
+                    "remotePath": normalized_remote_path,
+                    "statvfs": statvfs,
+                }
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "port": controller.port,
+                    "remotePath": normalized_remote_path,
+                    "code": _workspace_exception_code(exc),
+                    "error": str(exc),
+                }
+                if not _should_abort_for_exception(exc):
+                    recovery_payload = _recover_after_run_failure(controller)
+            finally:
+                self._end_exclusive_operation(pause_requested)
+
+        if recovery_payload and recovery_payload.get("output"):
+            self._emit_terminal_text(str(recovery_payload["output"]))
+
+        if recovery_payload and not recovery_payload.get("ok"):
+            payload["ok"] = False
+            existing_error = payload.get("error")
+            restore_error = recovery_payload.get("error") or "Failed to recover friendly REPL after statvfs"
+            if existing_error:
+                payload["error"] = f"{existing_error} | restore failed: {restore_error}"
+            else:
+                payload["error"] = f"restore failed: {restore_error}"
+
+        if recovery_payload is not None:
+            payload["restoreDetail"] = {
+                "ok": bool(recovery_payload.get("ok")),
+                "port": payload.get("port", port or ""),
+                "recovery": recovery_payload,
+            }
+
+        return payload
+
+    def workspace_sync_filesystem(self, port: str | None) -> dict[str, Any]:
+        if port:
+            opened = self.open(port)
+            if not opened.get("ok"):
+                return {
+                    "ok": False,
+                    "port": port,
+                    "supported": False,
+                    "error": opened.get("error", "Failed to open session."),
+                }
+
+        with self._operation_lock:
+            try:
+                controller, pause_requested = self._begin_exclusive_operation()
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "port": port or "",
+                    "supported": False,
+                    "code": _workspace_exception_code(exc),
+                    "error": str(exc),
+                }
+
+            payload: dict[str, Any]
+            recovery_payload: dict[str, Any] | None = None
+            try:
+                supported = controller.sync_filesystem(timeout=SYNC_DIR_COMMAND_TIMEOUT_SEC)
+                payload = {
+                    "ok": True,
+                    "port": controller.port,
+                    "supported": supported,
+                }
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "port": controller.port,
+                    "supported": False,
+                    "code": _workspace_exception_code(exc),
+                    "error": str(exc),
+                }
+                if not _should_abort_for_exception(exc):
+                    recovery_payload = _recover_after_run_failure(controller)
+            finally:
+                self._end_exclusive_operation(pause_requested)
+
+        if recovery_payload and recovery_payload.get("output"):
+            self._emit_terminal_text(str(recovery_payload["output"]))
+
+        if recovery_payload and not recovery_payload.get("ok"):
+            payload["ok"] = False
+            existing_error = payload.get("error")
+            restore_error = recovery_payload.get("error") or "Failed to recover friendly REPL after filesystem sync"
+            if existing_error:
+                payload["error"] = f"{existing_error} | restore failed: {restore_error}"
+            else:
+                payload["error"] = f"restore failed: {restore_error}"
+
+        if recovery_payload is not None:
+            payload["restoreDetail"] = {
+                "ok": bool(recovery_payload.get("ok")),
+                "port": payload.get("port", port or ""),
+                "recovery": recovery_payload,
+            }
+
+        return payload
+
     def workspace_read_file(self, port: str | None, remote_path: str) -> dict[str, Any]:
         normalized_remote_path = _sync_device_absolute_path(remote_path)
         if port:
@@ -2765,6 +2966,7 @@ class PersistentSession:
                         raise WorkspaceOperationError(f"File already exists: {normalized_remote_path}", code="EEXIST")
 
                 controller.sync_put_content(normalized_remote_path, content_bytes)
+                _safe_sync_filesystem(controller)
                 payload = {
                     "ok": True,
                     "port": controller.port,
@@ -2855,6 +3057,7 @@ class PersistentSession:
                 if not created:
                     raise WorkspaceOperationError(f"Directory was not created: {normalized_remote_path}", code="EINVAL")
 
+                _safe_sync_filesystem(controller)
                 payload = {
                     "ok": True,
                     "port": controller.port,
@@ -2930,6 +3133,7 @@ class PersistentSession:
                     recursive=recursive or stat.get("kind") == "file",
                     timeout=SYNC_DIR_COMMAND_TIMEOUT_SEC,
                 )
+                _safe_sync_filesystem(controller)
                 payload = {
                     "ok": True,
                     "port": controller.port,
@@ -3043,6 +3247,7 @@ class PersistentSession:
                         normalized_new_path,
                         timeout=SYNC_DIR_COMMAND_TIMEOUT_SEC,
                     )
+                    _safe_sync_filesystem(controller)
                     payload = {
                         "ok": True,
                         "port": controller.port,
@@ -4234,6 +4439,11 @@ class JobDispatcher:
                     port=_optional_arg_string(args, "port"),
                     remote_path=str(args["remotePath"]),
                 )
+            if job.command == "workspace.statvfs":
+                return self._session.workspace_statvfs(
+                    port=_optional_arg_string(args, "port"),
+                    remote_path=str(args["remotePath"]),
+                )
             if job.command == "workspace.read-file":
                 return self._session.workspace_read_file(
                     port=_optional_arg_string(args, "port"),
@@ -4264,6 +4474,10 @@ class JobDispatcher:
                     old_path=str(args["oldPath"]),
                     new_path=str(args["newPath"]),
                     overwrite=bool(args.get("overwrite", False)),
+                )
+            if job.command == "workspace.sync":
+                return self._session.workspace_sync_filesystem(
+                    port=_optional_arg_string(args, "port"),
                 )
             if job.command == "workspace.import":
                 return self._session.import_workspace(
@@ -4363,6 +4577,16 @@ def _recover_after_run_failure(controller: MicroPythonController) -> dict[str, A
         or friendly_repl.get("error")
         or "Failed to recover friendly REPL after run.",
     }
+
+
+def _safe_sync_filesystem(controller: MicroPythonController) -> bool:
+    sync_filesystem = getattr(controller, "sync_filesystem", None)
+    if not callable(sync_filesystem):
+        return False
+    try:
+        return bool(sync_filesystem(timeout=SYNC_DIR_COMMAND_TIMEOUT_SEC))
+    except Exception:
+        return False
 
 
 def _build_esptool_multi_write_cmd(
@@ -5113,6 +5337,14 @@ def _device_list_directory_stream_script(remote_dir: str) -> str:
     return _sync_scripts.device_list_directory_stream_script(remote_dir)
 
 
+def _device_statvfs_script(remote_path: str) -> str:
+    return _sync_scripts.device_statvfs_script(remote_path)
+
+
+def _device_sync_script() -> str:
+    return _sync_scripts.device_sync_script()
+
+
 def _device_delete_path_script(remote_path: str, recursive: bool) -> str:
     return _sync_scripts.device_delete_path_script(remote_path, recursive=recursive)
 
@@ -5610,6 +5842,82 @@ def _parse_device_list_directory_output(output: str) -> list[dict[str, Any]]:
     if not snippet:
         raise ControllerError("Device directory listing returned no output.")
     raise ControllerError(f"Device directory listing produced no ENTRY rows: {snippet[:200]}")
+
+
+def _parse_device_statvfs_output(output: str, *, remote_path: str) -> dict[str, Any]:
+    for raw_line in output.replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("STATVFSERR:"):
+            raise _parse_workspace_error_payload(line[len("STATVFSERR:") :])
+        if not line.startswith("STATVFS:"):
+            continue
+
+        fields = line[len("STATVFS:") :].split(":")
+        if len(fields) < 5:
+            continue
+
+        try:
+            block_size = max(0, int(fields[0]))
+        except Exception:
+            block_size = 0
+        try:
+            fragment_size = max(0, int(fields[1]))
+        except Exception:
+            fragment_size = 0
+        try:
+            blocks = max(0, int(fields[2]))
+        except Exception:
+            blocks = 0
+        try:
+            free_blocks = max(0, int(fields[3]))
+        except Exception:
+            free_blocks = 0
+        try:
+            available_blocks = max(0, int(fields[4]))
+        except Exception:
+            available_blocks = free_blocks
+
+        byte_unit = fragment_size or block_size
+        total_bytes = blocks * byte_unit
+        free_bytes = free_blocks * byte_unit
+        used_bytes = max(0, total_bytes - free_bytes)
+
+        return {
+            "path": remote_path,
+            "blockSize": block_size,
+            "fragmentSize": fragment_size,
+            "blocks": blocks,
+            "freeBlocks": free_blocks,
+            "availableBlocks": available_blocks,
+            "totalBytes": total_bytes,
+            "freeBytes": free_bytes,
+            "usedBytes": used_bytes,
+        }
+
+    snippet = output.strip()
+    if not snippet:
+        raise ControllerError(f"Device statvfs returned no output for {remote_path}.")
+    raise ControllerError(f"Device statvfs produced no STATVFS row for {remote_path}: {snippet[:200]}")
+
+
+def _parse_device_sync_output(output: str) -> bool:
+    for raw_line in output.replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line == "SYNC_OK":
+            return True
+        if line == "SYNC_UNSUPPORTED":
+            return False
+        if line.startswith("SYNCERR:"):
+            raise _parse_workspace_error_payload(line[len("SYNCERR:") :])
+
+    snippet = output.strip()
+    if not snippet:
+        raise ControllerError("Device sync returned no output.")
+    raise ControllerError(f"Device sync produced no confirmation: {snippet[:200]}")
 
 
 def _parse_device_delete_path_output(output: str, *, remote_path: str) -> str:

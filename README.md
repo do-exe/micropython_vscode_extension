@@ -28,6 +28,26 @@ This release currently supports Linux only.
 - Fetch all files from the device
 - Link a local folder and sync or upload the whole folder
 
+## AI-Assisted Operations
+
+This extension provides parameterized commands that AI assistants can use for offline device interactions without needing source code access. These commands enable programmatic control over the MicroPython device, and they also prompt for missing inputs when launched manually from the command palette.
+
+### Available AI Commands
+
+- `micropython.ai.runCode(code: string)`: Execute arbitrary MicroPython code on the device.
+- `micropython.ai.uploadFile(localPath: string, remotePath: string)`: Upload a local file to the device.
+- `micropython.ai.downloadFile(remotePath: string, localPath: string)`: Download a file from the device.
+- `micropython.ai.listFiles(remotePath?: string)`: List files in a device directory (default: "/").
+- `micropython.ai.createDir(remotePath: string)`: Create a directory on the device.
+- `micropython.ai.delete(remotePath: string)`: Delete a file or directory on the device.
+- `micropython.ai.readFile(remotePath: string)`: Read and return file content from the device.
+- `micropython.ai.writeFile(remotePath: string, content: string)`: Write content to a file on the device.
+- `micropython.ai.stat(remotePath: string)`: Get file/directory statistics.
+- `micropython.ai.sendRepl(command: string)`: Send a command to the REPL.
+- `micropython.ai.softReset()`: Perform a soft reset on the device.
+
+**Note**: All commands require a device to be selected first. AI assistants can invoke these using VS Code's command system with positional arguments or a single object argument such as `{ "remotePath": "/boot.py" }`.
+
 ## Install from VSIX
 
 1. Open VS Code.

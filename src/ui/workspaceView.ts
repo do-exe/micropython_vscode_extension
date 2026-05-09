@@ -42,17 +42,17 @@ function syncAncestorSelection(node: WorkspaceNode | undefined): void {
   }
 }
 
-function collectSelectedPaths(nodes: readonly WorkspaceNode[]): string[] {
+function collectSelectedPaths(nodes: readonly WorkspaceNode[], skipCheckedPath?: string): string[] {
   const selectedPaths: string[] = [];
 
   for (const node of nodes) {
-    if (node.checked) {
+    if (node.checked && node.remotePath !== skipCheckedPath) {
       selectedPaths.push(node.remotePath);
       continue;
     }
 
     if (node.children.length > 0) {
-      selectedPaths.push(...collectSelectedPaths(node.children));
+      selectedPaths.push(...collectSelectedPaths(node.children, skipCheckedPath));
     }
   }
 
@@ -237,12 +237,10 @@ export class MicroPythonWorkspaceViewProvider implements vscode.TreeDataProvider
       return [];
     }
 
-    const selectedPaths = collectSelectedPaths([this.root]);
-    if (this.selectionMode === "delete") {
-      return selectedPaths.filter((remotePath) => remotePath !== "/");
-    }
-
-    return selectedPaths;
+    return collectSelectedPaths(
+      [this.root],
+      this.selectionMode === "delete" ? "/" : undefined,
+    );
   }
 
   public getSelectedFetchPaths(): string[] {
@@ -545,7 +543,7 @@ export class MicroPythonWorkspaceViewProvider implements vscode.TreeDataProvider
   }
 
   private toTreeItem(node: WorkspaceNode): MicroPythonWorkspaceItem {
-    const checkboxState = this.selectionMode && !(this.selectionMode === "delete" && node.remotePath === "/")
+    const checkboxState = this.selectionMode
       ? (node.checked ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked)
       : undefined;
     const item = new MicroPythonWorkspaceItem(

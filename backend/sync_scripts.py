@@ -516,6 +516,49 @@ def device_list_directory_stream_script(remote_dir: str) -> str:
     )
 
 
+def device_statvfs_script(remote_path: str) -> str:
+    remote_path_json = json.dumps(remote_path)
+    return (
+        "import os\n"
+        f"_path = {remote_path_json}\n"
+        "def _emit_err(_prefix, _exc):\n"
+        "    _errno = getattr(_exc, 'errno', None)\n"
+        "    if _errno is None:\n"
+        "        try:\n"
+        "            _errno = int(_exc.args[0]) if getattr(_exc, 'args', None) else None\n"
+        "        except:\n"
+        "            _errno = None\n"
+        "    print(_prefix + ':' + ('' if _errno is None else str(_errno)) + ':' + str(_exc))\n"
+        "try:\n"
+        "    _st = os.statvfs(_path)\n"
+        "    _values = [_st[_idx] if len(_st) > _idx else 0 for _idx in range(5)]\n"
+        "    print('STATVFS:' + ':'.join(str(_value) for _value in _values))\n"
+        "except Exception as _exc:\n"
+        "    _emit_err('STATVFSERR', _exc)\n"
+    )
+
+
+def device_sync_script() -> str:
+    return (
+        "import os\n"
+        "try:\n"
+        "    _sync = getattr(os, 'sync', None)\n"
+        "    if _sync is None:\n"
+        "        print('SYNC_UNSUPPORTED')\n"
+        "    else:\n"
+        "        _sync()\n"
+        "        print('SYNC_OK')\n"
+        "except Exception as _exc:\n"
+        "    _errno = getattr(_exc, 'errno', None)\n"
+        "    if _errno is None:\n"
+        "        try:\n"
+        "            _errno = int(_exc.args[0]) if getattr(_exc, 'args', None) else None\n"
+        "        except:\n"
+        "            _errno = None\n"
+        "    print('SYNCERR:' + ('' if _errno is None else str(_errno)) + ':' + str(_exc))\n"
+    )
+
+
 def device_delete_path_script(remote_path: str, recursive: bool) -> str:
     remote_path_json = json.dumps(remote_path)
     recursive_literal = "True" if recursive else "False"
@@ -605,18 +648,31 @@ def device_put_file_script(remote_file: str, data: bytes, chunk_bytes: int) -> s
     remote_file_json = json.dumps(remote_file)
     lines = [
         "import os",
+        "def _emit_err(_prefix, _exc):",
+        "    _errno = getattr(_exc, 'errno', None)",
+        "    if _errno is None:",
+        "        try:",
+        "            _errno = int(_exc.args[0]) if getattr(_exc, 'args', None) else None",
+        "        except:",
+        "            _errno = None",
+        "    print(_prefix + ':' + ('' if _errno is None else str(_errno)) + ':' + str(_exc))",
         "try:",
-        f"    os.remove({remote_file_json})",
-        "except OSError:",
-        "    pass",
-        f"_f = open({remote_file_json}, 'wb')",
+        "    try:",
+        f"        os.remove({remote_file_json})",
+        "    except OSError:",
+        "        pass",
+        f"    _f = open({remote_file_json}, 'wb')",
+        "    try:",
     ]
     for start in range(0, len(data), chunk_bytes):
         chunk = data[start : start + chunk_bytes]
-        lines.append(f"_f.write({repr(chunk)})")
+        lines.append(f"        _f.write({repr(chunk)})")
     lines.extend([
-        "_f.close()",
-        'print("OK")',
+        "    finally:",
+        "        _f.close()",
+        '    print("OK")',
+        "except Exception as _exc:",
+        "    _emit_err('PUTERR', _exc)",
     ])
     return "\r\n".join(lines) + "\r\n"
 

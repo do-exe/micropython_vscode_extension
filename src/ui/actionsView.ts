@@ -65,10 +65,11 @@ const ACTIONS: readonly MicroPythonActionDefinition[] = [
     icon: "link",
   },
   {
-    id: "fetchWorkspace",
-    label: "Fetch All Files",
-    command: "micropython.fetchWorkspace",
-    icon: "cloud-download",
+    id: "uploadWorkspaceEntry",
+    label: "Upload File/Folder",
+    description: "Copy local files or folders to the device",
+    command: "micropython.uploadWorkspaceEntry",
+    icon: "cloud-upload",
   },
 ];
 

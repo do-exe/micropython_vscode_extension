@@ -5,7 +5,10 @@ tsconfig.json
 **/.gitignore
 runtime/.tmp/**
 !out/**
-!backend/**
+backend/**
+!backend/micropython_backend.py
+!backend/sync_core.py
+!backend/sync_scripts.py
 !firmware/**
 !runtime/**
 !media/**
@@ -14,3 +17,15 @@ runtime/.tmp/**
 !CHANGELOG.md
 !LICENSE
 !SUPPORT.md
+.vscode/**
+**/__pycache__/**
+backend/test_*.py
+backend/test_micropython_backend.py
+backend/__pycache__/**
+runtime/**/__pycache__/**
+*.md
+!README.md
+!CHANGELOG.md
+!SUPPORT.md
+FUTURE_CROSS_PLATFORM_PLAN.md
+package-lock.json

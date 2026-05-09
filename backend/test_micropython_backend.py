@@ -1282,6 +1282,51 @@ class WorkspaceOperationTests(unittest.TestCase):
             ],
         )
 
+    def test_parse_device_statvfs_output_returns_usage(self) -> None:
+        parsed = backend._parse_device_statvfs_output("STATVFS:4096:4096:100:40:35\n", remote_path="/")
+        self.assertEqual(parsed["path"], "/")
+        self.assertEqual(parsed["blockSize"], 4096)
+        self.assertEqual(parsed["blocks"], 100)
+        self.assertEqual(parsed["freeBlocks"], 40)
+        self.assertEqual(parsed["totalBytes"], 409600)
+        self.assertEqual(parsed["freeBytes"], 163840)
+        self.assertEqual(parsed["usedBytes"], 245760)
+
+    def test_parse_device_sync_output_reports_support(self) -> None:
+        self.assertTrue(backend._parse_device_sync_output("SYNC_OK\n"))
+        self.assertFalse(backend._parse_device_sync_output("SYNC_UNSUPPORTED\n"))
+
+    def test_workspace_statvfs_returns_usage_payload(self) -> None:
+        class FakeController:
+            def __init__(self) -> None:
+                self.port = "COM_TEST"
+
+            def sync_statvfs_path(self, remote_path: str, timeout: float = 0.0) -> dict[str, object]:
+                self.statvfs_call = (remote_path, timeout)
+                return {
+                    "path": remote_path,
+                    "blockSize": 4096,
+                    "fragmentSize": 4096,
+                    "blocks": 100,
+                    "freeBlocks": 40,
+                    "availableBlocks": 35,
+                    "totalBytes": 409600,
+                    "freeBytes": 163840,
+                    "usedBytes": 245760,
+                }
+
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        controller = FakeController()
+        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
+        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
+
+        result = session.workspace_statvfs(port=None, remote_path="/")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remotePath"], "/")
+        self.assertEqual(result["statvfs"]["usedBytes"], 245760)
+        self.assertEqual(controller.statvfs_call[0], "/")
+
     def test_workspace_read_file_returns_base64_payload(self) -> None:
         class FakeController:
             def __init__(self) -> None:

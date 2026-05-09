@@ -28,6 +28,7 @@ import {
   type SyncFolderSelection,
   type WorkspaceStat,
   type WorkspaceStatResult,
+  type WorkspaceStatVfs,
   type WorkspaceTreeEntry,
   type WorkspaceTreeResult,
   type WorkspaceWriteFileResult,
@@ -42,10 +43,12 @@ import {
   createMicroPythonWorkspaceUri,
   getMicroPythonWorkspaceErrorCode,
   getMicroPythonWorkspaceParentUri,
+  isMicroPythonWorkspaceFileNotFoundError,
   normalizeMicroPythonRemotePath,
   parseMicroPythonWorkspaceUri,
 } from "../ui/workspaceFileSystemProvider";
 import { type WorkspaceSelectionMode, MicroPythonWorkspaceItem, MicroPythonWorkspaceViewProvider } from "../ui/workspaceView";
+import { AICommands } from "../ai/commands";
 
 const MAX_PROGRESS_MESSAGE_LENGTH = 100;
 const SESSION_OPEN_WAIT_MS = 5000;
@@ -61,8 +64,15 @@ type WorkspaceCommandTarget = {
   kind?: "file" | "folder" | "placeholder";
 };
 
+type WorkspaceFolderSummary = {
+  files: number;
+  directories: number;
+  bytes: number;
+};
+
 export class MicroPythonExtensionController implements vscode.Disposable {
   private readonly backend: BackendServiceClient;
+  private readonly aiCommands: AICommands;
   private readonly statusItem: vscode.StatusBarItem;
   private readonly runItem: vscode.StatusBarItem;
   private readonly runInteractiveItem: vscode.StatusBarItem;
@@ -113,6 +123,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.backend = new BackendServiceClient(context);
+    this.aiCommands = new AICommands(this.backend, this);
 
     this.statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.statusItem.command = "micropython.selectDevice";
@@ -216,6 +227,10 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     );
   }
 
+  public getSelectedPort(): string | undefined {
+    return this.selectedPort;
+  }
+
   public async start(): Promise<void> {
     this.context.subscriptions.push(
       this.statusItem,
@@ -229,6 +244,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       this.workspaceFetchOutput,
     );
     this.registerCommands();
+    this.aiCommands.registerCommands(this.context);
     this.setInitializingStatus();
 
     try {
@@ -390,21 +406,15 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       return;
     }
 
-    await this.pollDevices();
+    await this.pollDevices({ allowSessionConnect: false });
     if (this.devices.length === 0) {
       void vscode.window.showWarningMessage("No MicroPython device detected. Connect the device, then run Select Device again.");
       return;
     }
 
-    if (this.devices.length === 1) {
-      await this.persistSelectedPort(this.devices[0].port);
-      this.showReplTerminal(false);
-      await this.pollDevices();
-      return;
-    }
-
     const picks = this.devices.map((device) => ({
       label: device.port,
+      description: this.formatDeviceName(device),
       detail: this.formatDevicePickerDetail(device),
       port: device.port,
     }));
@@ -423,6 +433,10 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     this.showReplTerminal(false);
     await this.pollDevices();
     void vscode.window.showInformationMessage(`Device selected: ${choice.port}`);
+  }
+
+  private formatDeviceName(device: DeviceInfo): string {
+    return device.product?.trim() || device.description?.trim() || "Unknown board";
   }
 
   private formatDevicePickerDetail(device: DeviceInfo): string {
@@ -455,6 +469,8 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     if (!connected) {
       return;
     }
+
+    await this.syncWorkspaceFilesystemBestEffort(port, false);
 
     const timeout = vscode.workspace.getConfiguration("micropython").get<number>("resetTimeoutSeconds", 5);
 
@@ -1041,6 +1057,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
         return;
       }
       await vscode.workspace.fs.writeFile(fileUri, new Uint8Array());
+      await this.workspaceViewProvider.reload();
       const document = await vscode.workspace.openTextDocument(fileUri);
       await vscode.window.showTextDocument(document, { preview: false });
     } catch (error) {
@@ -1072,6 +1089,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
         return;
       }
       await vscode.workspace.fs.createDirectory(folderUri);
+      await this.workspaceViewProvider.reload();
     } catch (error) {
       void vscode.window.showErrorMessage(this.errorMessage(error, `Failed to create ${folderName}.`));
     }
@@ -1186,18 +1204,39 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       const isDirectory = (entryStat.type & vscode.FileType.Directory) !== 0;
       const typeLabel = isDirectory ? "Folder" : "File";
       let summaryLine = `Size: ${this.formatByteCount(entryStat.size)}`;
+      const extraLines: string[] = [];
 
       if (isDirectory) {
         const childEntries = await vscode.workspace.fs.readDirectory(targetUri);
         const folderCount = childEntries.filter(([, type]) => (type & vscode.FileType.Directory) !== 0).length;
         const fileCount = childEntries.filter(([, type]) => (type & vscode.FileType.File) !== 0).length;
-        summaryLine = `Contents: ${folderCount} folder(s), ${fileCount} file(s)`;
+        summaryLine = `Direct contents: ${folderCount} folder(s), ${fileCount} file(s)`;
+
+        const recursiveSummary = await this.computeWorkspaceFolderSummary(port, remotePath);
+        if (recursiveSummary) {
+          extraLines.push(
+            `Recursive contents: ${recursiveSummary.directories} folder(s), ${recursiveSummary.files} file(s)`,
+            `Recursive size: ${this.formatByteCount(recursiveSummary.bytes)}`,
+          );
+        }
+      }
+
+      if (remotePath === "/") {
+        const usage = await this.getWorkspaceFileSystemUsage(port, remotePath);
+        if (usage) {
+          extraLines.push(
+            `Storage total: ${this.formatByteCount(usage.totalBytes)}`,
+            `Storage used: ${this.formatByteCount(usage.usedBytes)}`,
+            `Storage free: ${this.formatByteCount(usage.freeBytes)}`,
+          );
+        }
       }
 
       const detailLines = [
         `Name: ${name}`,
         `Type: ${typeLabel}`,
         summaryLine,
+        ...extraLines,
         `Modified: ${this.formatWorkspaceTimestamp(entryStat.mtime)}`,
         `Created: ${this.formatWorkspaceTimestamp(entryStat.ctime)}`,
         `Path: ${remotePath}`,
@@ -1214,8 +1253,56 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     }
   }
 
+  private async computeWorkspaceFolderSummary(port: string, remotePath: string): Promise<WorkspaceFolderSummary | undefined> {
+    try {
+      const result = await this.withWorkspaceBackendOperation(port, () => this.backend.scanWorkspaceTree(port));
+      if (!result.ok) {
+        return undefined;
+      }
+
+      const normalizedPath = normalizeMicroPythonRemotePath(remotePath);
+      const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+      const summary: WorkspaceFolderSummary = {
+        files: 0,
+        directories: 0,
+        bytes: 0,
+      };
+
+      for (const entry of result.entries ?? []) {
+        const entryPath = normalizeMicroPythonRemotePath(entry.path);
+        const isDescendant = normalizedPath === "/"
+          ? entryPath !== "/"
+          : entryPath.startsWith(prefix);
+        if (!isDescendant) {
+          continue;
+        }
+
+        if (entry.kind === "directory") {
+          summary.directories += 1;
+          continue;
+        }
+
+        summary.files += 1;
+        summary.bytes += Math.max(0, entry.size ?? 0);
+      }
+
+      return summary;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async getWorkspaceFileSystemUsage(port: string, remotePath: string): Promise<WorkspaceStatVfs | undefined> {
+    try {
+      return await this.statWorkspaceFileSystem(port, remotePath);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async deleteWorkspaceEntryCommand(target?: WorkspaceCommandTarget): Promise<void> {
-    const targetUri = await this.resolveWorkspaceEntryUri(target);
+    const effectiveTarget = this.getWorkspaceCommandTarget(target);
+    const targetUri = await this.resolveWorkspaceEntryUri(effectiveTarget);
     if (!targetUri) {
       return;
     }
@@ -1227,7 +1314,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     }
 
     const label = path.posix.basename(remotePath);
-    const isDirectory = target?.kind === "folder";
+    const isDirectory = effectiveTarget?.kind === "folder";
     const confirmation = await vscode.window.showWarningMessage(
       `Delete ${isDirectory ? "folder" : "file"} ${label} from MicroPython?`,
       {
@@ -1257,13 +1344,40 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
     const destinationUri = this.resolveWorkspaceDirectoryUri(target, port);
     const destinationPath = parseMicroPythonWorkspaceUri(destinationUri).remotePath;
+
+    type UploadSourceChoice = vscode.QuickPickItem & {
+      sourceKind: "files" | "folders";
+    };
+    const sourceChoice = await vscode.window.showQuickPick<UploadSourceChoice>([
+      {
+        label: "$(file) Files",
+        description: "Upload one or more files",
+        sourceKind: "files",
+      },
+      {
+        label: "$(folder) Folders",
+        description: "Upload one or more folders",
+        sourceKind: "folders",
+      },
+    ], {
+      title: "MicroPython: Upload",
+      placeHolder: "Choose what to upload",
+      ignoreFocusOut: true,
+    });
+    if (!sourceChoice) {
+      return;
+    }
+
+    const pickingFiles = sourceChoice.sourceKind === "files";
     const picked = await vscode.window.showOpenDialog({
-      canSelectFiles: true,
-      canSelectFolders: true,
+      canSelectFiles: pickingFiles,
+      canSelectFolders: !pickingFiles,
       canSelectMany: true,
       openLabel: "Upload to MicroPython",
-      title: "MicroPython: Select Files or Folders to Upload",
-      defaultUri: vscode.workspace.workspaceFolders?.find((folder) => folder.uri.scheme === "file")?.uri,
+      title: pickingFiles
+        ? "MicroPython: Select Files to Upload"
+        : "MicroPython: Select Folders to Upload",
+      defaultUri: this.getDefaultLocalFolderUri(),
     });
     if (!picked || picked.length === 0) {
       return;
@@ -1805,6 +1919,19 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     }
   }
 
+  private async syncWorkspaceFilesystemBestEffort(port: string, showWarning: boolean): Promise<void> {
+    try {
+      const result = await this.withWorkspaceBackendOperation(port, () => this.backend.syncWorkspaceFileSystem(port));
+      if (showWarning && !result.ok) {
+        void vscode.window.showWarningMessage(this.formatWorkspaceResultError(result, "MicroPython filesystem sync failed."));
+      }
+    } catch (error) {
+      if (showWarning) {
+        void vscode.window.showWarningMessage(this.errorMessage(error, "MicroPython filesystem sync failed."));
+      }
+    }
+  }
+
   private async scanWorkspaceTree(): Promise<{ port: string; entries: WorkspaceTreeEntry[] }> {
     const port = await this.resolvePortForOperation();
     const result = await this.withWorkspaceBackendOperation(port, () => this.backend.scanWorkspaceTree(port));
@@ -1824,6 +1951,17 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       this.throwWorkspaceResultError(result, `Failed to stat ${remotePath}.`);
     }
     return result.stat;
+  }
+
+  private async statWorkspaceFileSystem(port: string, remotePath: string): Promise<WorkspaceStatVfs | undefined> {
+    const result = await this.withWorkspaceBackendOperation(
+      port,
+      () => this.backend.statWorkspaceFileSystem(port, remotePath),
+    );
+    if (!result.ok || !result.statvfs) {
+      return undefined;
+    }
+    return result.statvfs;
   }
 
   private async readWorkspaceDirectoryUri(uri: vscode.Uri): Promise<WorkspaceDirectoryEntry[]> {
@@ -2031,10 +2169,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       await vscode.workspace.fs.stat(uri);
       return true;
     } catch (error) {
-      if (getMicroPythonWorkspaceErrorCode(error) === "ENOENT") {
-        return false;
-      }
-      if (error instanceof vscode.FileSystemError && /file not found/i.test(error.message)) {
+      if (isMicroPythonWorkspaceFileNotFoundError(error)) {
         return false;
       }
       throw error;
@@ -2097,7 +2232,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     },
     fallback: string,
   ): never {
-    const message = result.error?.trim() || fallback;
+    const message = this.formatWorkspaceResultError(result, fallback);
     if (typeof result.code === "string" && result.code.trim().length > 0) {
       throw createMicroPythonWorkspaceError(
         result.code as Parameters<typeof createMicroPythonWorkspaceError>[0],
@@ -2105,6 +2240,44 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       );
     }
     throw new Error(message);
+  }
+
+  private formatWorkspaceResultError(
+    result: {
+      code?: string;
+      error?: string;
+    },
+    fallback: string,
+  ): string {
+    const detail = result.error?.trim();
+    const friendly = this.workspaceErrorDescription(result.code);
+    if (friendly && detail) {
+      return `${friendly} (${detail})`;
+    }
+    return friendly || detail || fallback;
+  }
+
+  private workspaceErrorDescription(code: string | undefined): string | undefined {
+    switch (code) {
+      case "ENOENT":
+        return "The file or folder does not exist on the device.";
+      case "EEXIST":
+        return "A file or folder with that name already exists on the device.";
+      case "ENOTDIR":
+        return "A parent path is a file, not a folder.";
+      case "EISDIR":
+        return "That path is a folder, not a file.";
+      case "ENOTEMPTY":
+        return "The folder is not empty.";
+      case "ENOSPC":
+        return "The MicroPython device storage is full.";
+      case "EPERM":
+        return "The MicroPython device denied that filesystem operation.";
+      case "EINVAL":
+        return "The MicroPython workspace path or operation is invalid.";
+      default:
+        return undefined;
+    }
   }
 
   private async openTerminal(): Promise<void> {
@@ -3125,9 +3298,14 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   }
 
   private errorMessage(error: unknown, fallback: string): string {
+    const workspaceCode = getMicroPythonWorkspaceErrorCode(error);
+    const workspaceDescription = this.workspaceErrorDescription(workspaceCode);
     if (error instanceof Error && error.message.trim().length > 0) {
+      if (workspaceDescription && !error.message.includes(workspaceDescription)) {
+        return `${workspaceDescription} (${error.message})`;
+      }
       return error.message;
     }
-    return fallback;
+    return workspaceDescription || fallback;
   }
 }

@@ -112,6 +112,18 @@ export type WorkspaceStat = {
   mtime?: number;
 };
 
+export type WorkspaceStatVfs = {
+  path: string;
+  blockSize: number;
+  fragmentSize: number;
+  blocks: number;
+  freeBlocks: number;
+  availableBlocks: number;
+  totalBytes: number;
+  freeBytes: number;
+  usedBytes: number;
+};
+
 export type WorkspaceTreeResult = {
   ok: boolean;
   port: string;
@@ -134,6 +146,15 @@ export type WorkspaceStatResult = {
   port: string;
   remotePath: string;
   stat?: WorkspaceStat;
+  code?: WorkspaceErrorCode;
+  error?: string;
+};
+
+export type WorkspaceStatVfsResult = {
+  ok: boolean;
+  port: string;
+  remotePath: string;
+  statvfs?: WorkspaceStatVfs;
   code?: WorkspaceErrorCode;
   error?: string;
 };
@@ -179,6 +200,14 @@ export type WorkspaceRenameResult = {
   port: string;
   oldPath: string;
   newPath: string;
+  code?: WorkspaceErrorCode;
+  error?: string;
+};
+
+export type WorkspaceSyncResult = {
+  ok: boolean;
+  port: string;
+  supported?: boolean;
   code?: WorkspaceErrorCode;
   error?: string;
 };

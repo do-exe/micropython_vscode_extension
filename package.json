@@ -3,7 +3,7 @@
   "displayName": "MicroPython",
   "description": "General MicroPython device extension for persistent REPL access and remote workspace file management.",
   "version": "0.1.0",
-  "publisher": "micropython-extension",
+  "publisher": "do-exe",
   "author": "do-exe",
   "license": "MIT",
   "icon": "media/micropython-marketplace-icon.png",
@@ -39,7 +39,9 @@
   "main": "out/extension.js",
   "files": [
     "out/**",
-    "backend/**",
+    "backend/micropython_backend.py",
+    "backend/sync_core.py",
+    "backend/sync_scripts.py",
     "runtime/**",
     "media/**",
     "package.json",
@@ -133,8 +135,8 @@
         "command": "micropython.deleteWorkspaceSelection",
         "title": "MicroPython: Delete Selected Files",
         "icon": {
-          "light": "media/erase.svg",
-          "dark": "media/erase.svg"
+          "light": "media/workspace-delete-light.svg",
+          "dark": "media/workspace-delete-dark.svg"
         }
       },
       {
@@ -224,7 +226,7 @@
       },
       {
         "command": "micropython.uploadWorkspaceEntry",
-        "title": "MicroPython: Upload Into Workspace"
+        "title": "MicroPython: Upload File or Folder"
       },
       {
         "command": "micropython.downloadWorkspaceEntry",
@@ -244,6 +246,61 @@
           "light": "media/workspace-mount-light.svg",
           "dark": "media/workspace-mount-dark.svg"
         }
+      },
+      {
+        "command": "micropython.ai.listFiles",
+        "title": "MicroPython: AI List Files",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.runCode",
+        "title": "MicroPython: AI Run Code",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.uploadFile",
+        "title": "MicroPython: AI Upload File",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.downloadFile",
+        "title": "MicroPython: AI Download File",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.createDir",
+        "title": "MicroPython: AI Create Directory",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.delete",
+        "title": "MicroPython: AI Delete File/Dir",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.readFile",
+        "title": "MicroPython: AI Read File",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.writeFile",
+        "title": "MicroPython: AI Write File",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.stat",
+        "title": "MicroPython: AI File Stats",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.sendRepl",
+        "title": "MicroPython: AI Send REPL Command",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.softReset",
+        "title": "MicroPython: AI Soft Reset",
+        "category": "MicroPython AI"
       }
     ],
     "menus": {
@@ -280,6 +337,21 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "micropython.newWorkspaceFile",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceRoot || viewItem == micropythonWorkspaceFolder)",
+          "group": "0_create@1"
+        },
+        {
+          "command": "micropython.newWorkspaceFolder",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceRoot || viewItem == micropythonWorkspaceFolder)",
+          "group": "0_create@2"
+        },
+        {
+          "command": "micropython.uploadWorkspaceEntry",
+          "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceRoot || viewItem == micropythonWorkspaceFolder)",
+          "group": "0_create@3"
+        },
         {
           "command": "micropython.renameWorkspaceEntry",
           "when": "view == micropython.workspaceView && (viewItem == micropythonWorkspaceFolder || viewItem == micropythonWorkspaceFile)",
@@ -354,7 +426,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run build",
-    "package:vsix": "npm run build && npx @vscode/vsce package --allow-missing-repository --no-dependencies --no-yarn"
+    "package:vsix": "npm run build && npx @vscode/vsce package --allow-missing-repository --no-rewrite-relative-links --no-dependencies --no-yarn"
   },
   "overrides": {
     "cheerio": "1.0.0-rc.12"
