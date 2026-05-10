@@ -69,6 +69,16 @@ export class BackendServiceClient implements vscode.Disposable {
     await this.startService();
   }
 
+  public async getBundledPythonLaunch(): Promise<{ pythonPath: string; env: NodeJS.ProcessEnv }> {
+    if (!this.bundledPythonPath || !this.bundledPythonEnv) {
+      await this.ensureReady();
+    }
+    return {
+      pythonPath: this.requireBundledPython(),
+      env: { ...this.requireBundledPythonEnv() },
+    };
+  }
+
   public dispose(): void {
     this.stopService("MicroPython backend disposed");
     this.terminalOutputEmitter.dispose();

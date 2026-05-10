@@ -32,6 +32,16 @@ This release currently supports Linux only.
 
 This extension provides parameterized commands that AI assistants can use for offline device interactions without needing source code access. These commands enable programmatic control over the MicroPython device, and they also prompt for missing inputs when launched manually from the command palette.
 
+The extension also exposes native VS Code Language Model Tools and a bundled MCP stdio server. In Copilot Agent mode or compatible MCP clients, assistants should use these tools instead of guessing external commands like `mpremote`, `ampy`, `esptool`, or direct raw serial access:
+
+- `micropython_device_status`: Check selected and detected MicroPython devices.
+- `micropython_sync_project`: Upload a local project folder through the extension backend.
+- `micropython_run_and_test`: Sync, run, capture output, and return structured errors for MicroPython code.
+
+The MCP server also publishes `micropython://agent-guide` and `micropython://device-status` resources for clients that surface MCP resources.
+
+Some agent runtimes only read their own MCP configuration at startup. Use `MicroPython: AI Agent MCP Status` to see whether VS Code tools, the VS Code MCP provider, workspace MCP config, and Codex global MCP config can see the MicroPython server. Use `MicroPython: Configure AI Agent MCP Access` to write `.vscode/mcp.json` and/or sync Codex with `codex mcp add`.
+
 ### Available AI Commands
 
 - `micropython.ai.runCode(code: string)`: Execute arbitrary MicroPython code on the device.
@@ -97,7 +107,7 @@ The download icon starts file selection for download. The delete icon starts fil
 
 ## Requirements
 
-- VS Code 1.85.0 or newer
+- VS Code 1.109.0 or newer
 - A MicroPython-compatible device
 - USB or serial permission on Linux
 

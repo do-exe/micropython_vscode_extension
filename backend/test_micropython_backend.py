@@ -233,12 +233,14 @@ class SyncFolderTests(unittest.TestCase):
             (root / "visible").mkdir()
             (root / ".hidden_dir").mkdir()
             (root / "__pycache__").mkdir()
+            (root / "node_modules").mkdir()
             (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
             (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
             (root / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
             (root / "visible" / "module.py").write_text("print('visible')\n", encoding="utf-8")
             (root / ".hidden_dir" / "secret.py").write_text("print('no')\n", encoding="utf-8")
             (root / "__pycache__" / "module.cpython-312.pyc").write_bytes(b"skip")
+            (root / "node_modules" / "skip.py").write_text("print('no')\n", encoding="utf-8")
 
             local_root, directories, files = backend._scan_local_folder(str(root), "/")
 

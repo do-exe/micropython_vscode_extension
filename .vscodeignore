@@ -7,6 +7,7 @@ runtime/.tmp/**
 !out/**
 backend/**
 !backend/micropython_backend.py
+!backend/mcp_server.py
 !backend/sync_core.py
 !backend/sync_scripts.py
 !firmware/**

@@ -2,7 +2,7 @@
   "name": "micropython-vscode-extension",
   "displayName": "MicroPython",
   "description": "General MicroPython device extension for persistent REPL access and remote workspace file management.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "do-exe",
   "author": "do-exe",
   "license": "MIT",
@@ -17,7 +17,7 @@
     "theme": "dark"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.109.0"
   },
   "categories": [
     "Other"
@@ -40,6 +40,7 @@
   "files": [
     "out/**",
     "backend/micropython_backend.py",
+    "backend/mcp_server.py",
     "backend/sync_core.py",
     "backend/sync_scripts.py",
     "runtime/**",
@@ -248,6 +249,16 @@
         }
       },
       {
+        "command": "micropython.ai.showAgentMcpStatus",
+        "title": "MicroPython: AI Agent MCP Status",
+        "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.ai.configureAgentMcp",
+        "title": "MicroPython: Configure AI Agent MCP Access",
+        "category": "MicroPython AI"
+      },
+      {
         "command": "micropython.ai.listFiles",
         "title": "MicroPython: AI List Files",
         "category": "MicroPython AI"
@@ -301,6 +312,125 @@
         "command": "micropython.ai.softReset",
         "title": "MicroPython: AI Soft Reset",
         "category": "MicroPython AI"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "micropython_device_status",
+        "toolReferenceName": "micropythonDeviceStatus",
+        "displayName": "MicroPython Device Status",
+        "modelDescription": "Checks selected and detected MicroPython devices. Use this before asking the user to install mpremote, ampy, esptool, or manually open a serial connection.",
+        "userDescription": "Check selected and detected MicroPython devices.",
+        "tags": [
+          "micropython",
+          "device",
+          "serial"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "string",
+              "description": "Optional serial port to inspect, such as /dev/ttyACM0."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "micropython_sync_project",
+        "toolReferenceName": "micropythonSyncProject",
+        "displayName": "MicroPython Sync Project",
+        "modelDescription": "Uploads a local MicroPython project folder to the selected device using this extension's backend. Prefer this over mpremote, ampy, esptool, or raw serial.",
+        "userDescription": "Sync a local project folder to a MicroPython device.",
+        "tags": [
+          "micropython",
+          "upload",
+          "sync"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "string",
+              "description": "Optional serial port. If omitted, the selected device or the only detected device is used."
+            },
+            "projectFolder": {
+              "type": "string",
+              "description": "Absolute local folder path to upload. If omitted, the active workspace folder is used."
+            },
+            "remoteRoot": {
+              "type": "string",
+              "description": "Remote destination folder on the MicroPython device.",
+              "default": "/"
+            },
+            "deleteExtraneous": {
+              "type": "boolean",
+              "description": "When true, delete device files under remoteRoot that are not present locally. Default false for AI safety."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "micropython_run_and_test",
+        "toolReferenceName": "micropythonRunAndTest",
+        "displayName": "MicroPython Run And Test",
+        "modelDescription": "Use this whenever the user asks to run, test, upload, or verify MicroPython code. This extension owns the device connection, project sync, upload, execution, output capture, and error reporting. Do not use mpremote, ampy, esptool, or raw serial directly unless this tool reports unsupported.",
+        "userDescription": "Sync, run, and test MicroPython code on the selected device.",
+        "tags": [
+          "micropython",
+          "run",
+          "test",
+          "upload"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "string",
+              "description": "Optional serial port. If omitted, the selected device or the only detected device is used."
+            },
+            "localFile": {
+              "type": "string",
+              "description": "Absolute path to a local Python file to run. If omitted, the active Python editor or workspace main.py is used."
+            },
+            "code": {
+              "type": "string",
+              "description": "Inline MicroPython code to run instead of localFile."
+            },
+            "projectFolder": {
+              "type": "string",
+              "description": "Absolute project folder to sync before running. If omitted, the active workspace folder is used."
+            },
+            "remoteRoot": {
+              "type": "string",
+              "description": "Remote destination folder on the MicroPython device.",
+              "default": "/"
+            },
+            "syncProject": {
+              "type": "boolean",
+              "description": "When true, sync projectFolder before running. Defaults to true for file-based runs and false for inline code."
+            },
+            "deleteExtraneous": {
+              "type": "boolean",
+              "description": "When true, delete device files under remoteRoot that are not present locally. Default false for AI safety."
+            },
+            "timeoutSeconds": {
+              "type": "number",
+              "description": "Run timeout in seconds. Use 0 for no timeout.",
+              "minimum": 0,
+              "maximum": 600
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "micropython.mcpServerProvider",
+        "label": "MicroPython"
       }
     ],
     "menus": {
@@ -433,7 +563,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.109.0",
     "@vscode/vsce": "^2.26.0",
     "typescript": "^5.6.3"
   }

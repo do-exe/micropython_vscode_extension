@@ -56,7 +56,14 @@ def compute_local_file_signature(local_path: Path, chunk_size: int = 4096) -> st
 
 
 def should_skip_sync_dir(name: str) -> bool:
-    return name.startswith(".") or name == "__pycache__"
+    return name.startswith(".") or name in {
+        "__pycache__",
+        "node_modules",
+        "venv",
+        "env",
+        "dist",
+        "build",
+    }
 
 
 def should_skip_sync_file(relative_path: Path) -> bool:
