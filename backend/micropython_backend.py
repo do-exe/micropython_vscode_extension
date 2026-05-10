@@ -1468,6 +1468,8 @@ class MicroPythonController:
         for index in range(num_chunks):
             chunk = data[index * SYNC_FILE_SCRIPT_CHUNK_BYTES : (index + 1) * SYNC_FILE_SCRIPT_CHUNK_BYTES]
             lines.append(f"        f.write({repr(chunk)})")
+        if num_chunks == 0:
+            lines.append("        pass")
         lines.extend([
             "    finally:",
             "        f.close()",

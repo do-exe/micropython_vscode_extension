@@ -1383,6 +1383,11 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       return;
     }
 
+    if (!pickingFiles) {
+      await this.uploadFoldersWithFastSync(port, picked, destinationPath);
+      return;
+    }
+
     try {
       const counts = await vscode.window.withProgress(
         {
@@ -1409,6 +1414,74 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     } catch (error) {
       void vscode.window.showErrorMessage(this.errorMessage(error, "MicroPython upload failed."));
     }
+  }
+
+  private async uploadFoldersWithFastSync(
+    port: string,
+    pickedFolders: readonly vscode.Uri[],
+    destinationPath: string,
+  ): Promise<void> {
+    const connected = await this.ensureSessionForPort(port, { force: true, notifyOnError: true, showTerminal: true });
+    if (!connected) {
+      return;
+    }
+
+    let uploadedFiles = 0;
+    let skippedFiles = 0;
+    let ensuredDirectories = 0;
+    let uploadedBytes = 0;
+
+    for (const sourceUri of pickedFolders) {
+      const localFolder = path.resolve(sourceUri.fsPath);
+      const folderName = path.basename(localFolder);
+      if (!folderName) {
+        void vscode.window.showWarningMessage(`Cannot derive a folder name for ${localFolder}.`);
+        return;
+      }
+
+      const selection: SyncFolderSelection = {
+        localFolder,
+        remoteFolder: normalizeMicroPythonRemotePath(path.posix.join(destinationPath, folderName)),
+        deleteExtraneous: false,
+      };
+
+      let result: SyncFolderResult;
+      try {
+        result = await this.executeFolderSyncWithSelection(port, selection, {
+          title: `MicroPython: Uploading ${folderName} to ${selection.remoteFolder}`,
+          revealOutput: true,
+          showProgress: true,
+        });
+      } catch (error) {
+        void vscode.window.showErrorMessage(this.errorMessage(error, `Folder upload failed for ${folderName}.`));
+        return;
+      }
+
+      if (!result.ok) {
+        const detail = result.error ? ` ${result.error}` : "";
+        void vscode.window.showErrorMessage(`Folder upload failed for ${folderName} on ${port}.${detail}`);
+        return;
+      }
+
+      uploadedFiles += result.filesSynced ?? 0;
+      skippedFiles += result.filesSkipped ?? 0;
+      ensuredDirectories += result.directoriesEnsured ?? 0;
+      uploadedBytes += result.bytesSynced ?? 0;
+    }
+
+    this.syncOutput.show(false);
+    this.workspaceViewProvider.invalidate(true);
+    if (this.shouldAutoScanWorkspace()) {
+      try {
+        await this.refreshWorkspaceCommand();
+      } catch {
+        // Ignore post-upload refresh failures; the upload itself already completed.
+      }
+    }
+
+    void vscode.window.showInformationMessage(
+      `MicroPython folder upload complete: ${uploadedFiles} uploaded, ${skippedFiles} skipped, ${ensuredDirectories} folder(s) ensured to ${destinationPath} (${this.formatByteCount(uploadedBytes)} sent).`,
+    );
   }
 
   private async downloadWorkspaceEntryCommand(target?: WorkspaceCommandTarget): Promise<void> {

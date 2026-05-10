@@ -667,6 +667,8 @@ def device_put_file_script(remote_file: str, data: bytes, chunk_bytes: int) -> s
     for start in range(0, len(data), chunk_bytes):
         chunk = data[start : start + chunk_bytes]
         lines.append(f"        _f.write({repr(chunk)})")
+    if not data:
+        lines.append("        pass")
     lines.extend([
         "    finally:",
         "        _f.close()",

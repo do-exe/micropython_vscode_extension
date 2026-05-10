@@ -185,6 +185,42 @@ class HelperSuppressionTests(unittest.TestCase):
         self.assertEqual(dummy.enter_calls, 0)
         self.assertEqual(dummy.exit_calls, 0)
 
+    def test_empty_device_put_script_has_valid_try_body(self) -> None:
+        source = backend._device_put_file_script("/empty.py", b"")
+
+        compile(source.replace("\r\n", "\n"), "<device-put-file>", "exec")
+        self.assertIn("        pass", source)
+
+    def test_sync_put_raw_empty_file_has_valid_try_body(self) -> None:
+        class Dummy:
+            def __init__(self) -> None:
+                self._in_raw_repl = True
+                self.source = ""
+
+            def _sync_reset_input_buffer(self) -> None:
+                return None
+
+            def _exec_raw_no_follow(self, source: str) -> None:
+                self.source = source
+
+            def _raw_follow(
+                self,
+                timeout: float | None,
+                line_callback=None,
+                cancel_event=None,
+            ) -> tuple[bytes, bytes, bool]:
+                return (b"OK", b"", False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty_file = pathlib.Path(tmpdir) / "empty.py"
+            empty_file.write_bytes(b"")
+            dummy = Dummy()
+
+            backend.MicroPythonController.sync_put_raw(dummy, empty_file, "empty.py")
+
+        compile(dummy.source.replace("\r\n", "\n"), "<sync-put-raw>", "exec")
+        self.assertIn("        pass", dummy.source)
+
 
 class SyncFolderTests(unittest.TestCase):
     def test_normalize_remote_folder_allows_device_root(self) -> None:
