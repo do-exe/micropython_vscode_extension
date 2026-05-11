@@ -5,11 +5,14 @@ import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 from pathlib import Path
+from typing import Callable
 
 
 EXTENSION_ID = "micropython-extension.micropython-vscode-extension"
@@ -257,9 +260,7 @@ def stage_linux_runtime(repo_root: Path) -> Path:
 
         validate_runtime(temp_dir)
 
-        if destination.exists():
-            shutil.rmtree(destination)
-        temp_dir.rename(destination)
+        replace_runtime_directory(temp_dir, destination)
         return destination
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -326,9 +327,7 @@ def stage_windows_runtime(repo_root: Path) -> Path:
 
         validate_runtime(temp_dir)
 
-        if destination.exists():
-            shutil.rmtree(destination)
-        temp_dir.rename(destination)
+        replace_runtime_directory(temp_dir, destination)
         return destination
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -349,6 +348,63 @@ def copy_windows_runtime_dlls(base_prefix: Path, executable_dir: Path, target_di
                     continue
                 shutil.copy2(source, target_dir / source.name)
                 copied.add(target_name)
+
+
+def replace_runtime_directory(source: Path, destination: Path) -> None:
+    if destination.exists():
+        remove_runtime_directory(destination)
+
+    retry_filesystem_operation(
+        lambda: source.rename(destination),
+        f"replace bundled runtime directory {destination}",
+    )
+
+
+def remove_runtime_directory(path: Path) -> None:
+    retry_filesystem_operation(
+        lambda: shutil.rmtree(path, onerror=remove_readonly),
+        f"remove existing bundled runtime directory {path}",
+    )
+
+
+def remove_readonly(func: Callable[[str], None], path: str, _: object) -> None:
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    func(path)
+
+
+def retry_filesystem_operation(operation: Callable[[], None], description: str) -> None:
+    last_error: OSError | None = None
+    for _ in range(20):
+        try:
+            operation()
+            return
+        except OSError as exc:
+            last_error = exc
+            if not should_retry_filesystem_error(exc):
+                break
+            time.sleep(0.5)
+
+    if last_error is None:
+        return
+
+    if sys.platform == "win32" and isinstance(last_error, PermissionError):
+        raise RuntimeBuildError(
+            f"Could not {description}: {last_error}. Close any VS Code windows or Python processes using the runtime. "
+            "If Windows still reports Access is denied, reset ownership/ACLs for the generated runtime directory and rerun staging."
+        ) from last_error
+
+    raise last_error
+
+
+def should_retry_filesystem_error(exc: OSError) -> bool:
+    if isinstance(exc, PermissionError):
+        return True
+    if sys.platform == "win32":
+        return getattr(exc, "winerror", None) in {5, 32, 33, 145}
+    return False
 
 
 def validate_runtime(runtime_dir: Path) -> None:

@@ -1,6 +1,8 @@
 .vscode/
 node_modules/
 out/
+.venv-runtime/
+.venv/
 *.vsix
 .vscode-test/
 __pycache__/
