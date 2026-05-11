@@ -4,6 +4,8 @@ tsconfig.json
 *.ts
 **/.gitignore
 runtime/.tmp/**
+.venv-runtime/**
+.venv/**
 !out/**
 backend/**
 !backend/micropython_backend.py
@@ -30,3 +32,4 @@ runtime/**/__pycache__/**
 !SUPPORT.md
 FUTURE_CROSS_PLATFORM_PLAN.md
 package-lock.json
+*.vsix

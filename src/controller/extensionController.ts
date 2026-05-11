@@ -251,6 +251,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       await this.backend.ensureReady();
       this.backendReady = true;
       this.sessionState = await this.backend.getSessionState();
+      await this.aiCommands.ensureCodexMcpConfigOnActivation();
     } catch (error) {
       this.setNoDeviceStatus("MicroPython backend setup failed");
       void vscode.window.showErrorMessage(this.errorMessage(error, "MicroPython backend setup failed."));

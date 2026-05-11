@@ -5,11 +5,14 @@ import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 from pathlib import Path
+from typing import Callable
 
 
 EXTENSION_ID = "micropython-extension.micropython-vscode-extension"
@@ -21,19 +24,36 @@ class RuntimeBuildError(RuntimeError):
 
 
 def platform_key() -> str:
-    if sys.platform != "linux":
-        raise RuntimeBuildError("Bundled MicroPython runtime packaging currently supports Linux only.")
-
     machine = platform.machine().lower()
-    if machine in {"x86_64", "amd64"}:
-        return "linux-x64"
-    if machine in {"aarch64", "arm64"}:
-        return "linux-arm64"
-    raise RuntimeBuildError(f"Unsupported Linux architecture for bundled runtime: {machine}")
+    if sys.platform == "linux":
+        if machine in {"x86_64", "amd64"}:
+            return "linux-x64"
+        if machine in {"aarch64", "arm64"}:
+            return "linux-arm64"
+        raise RuntimeBuildError(f"Unsupported Linux architecture for bundled runtime: {machine}")
+
+    if sys.platform == "win32":
+        if machine in {"amd64", "x86_64"}:
+            return "win32-x64"
+        if machine in {"arm64", "aarch64"}:
+            return "win32-arm64"
+        raise RuntimeBuildError(f"Unsupported Windows architecture for bundled runtime: {machine}")
+
+    raise RuntimeBuildError(f"Unsupported platform for bundled MicroPython runtime packaging: {sys.platform}")
 
 
 def python_version_tag() -> str:
     return f"python{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def windows_site_packages_path() -> str:
+    return "Lib/site-packages"
+
+
+def runtime_default_site_packages_path() -> str:
+    if sys.platform == "win32":
+        return windows_site_packages_path()
+    return f"lib/{python_version_tag()}/site-packages"
 
 
 def resolve_existing_runtime_site_packages(repo_root: Path, version_tag: str) -> Path | None:
@@ -63,6 +83,7 @@ def resolve_existing_runtime_site_packages(repo_root: Path, version_tag: str) ->
         candidates.append((runtime_dir / site_packages).resolve())
 
     candidates.append(runtime_dir / "lib" / version_tag / "site-packages")
+    candidates.append(runtime_dir / windows_site_packages_path())
 
     for candidate in candidates:
         if candidate.is_dir():
@@ -84,11 +105,21 @@ def resolve_source_site_packages(repo_root: Path) -> Path:
     if explicit_site_packages:
         candidates.append(Path(explicit_site_packages).expanduser())
     if explicit_pyenv:
-        candidates.append(Path(explicit_pyenv).expanduser() / "lib" / version_tag / "site-packages")
+        pyenv_path = Path(explicit_pyenv).expanduser()
+        candidates.extend([
+            pyenv_path / "lib" / version_tag / "site-packages",
+            pyenv_path / windows_site_packages_path(),
+        ])
 
     home = Path.home()
-    for code_dir in ("Code", "Code - Insiders"):
-        candidates.append(home / ".config" / code_dir / "User" / "globalStorage" / EXTENSION_ID / "pyenv" / "lib" / version_tag / "site-packages")
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            for code_dir in ("Code", "Code - Insiders"):
+                candidates.append(Path(appdata) / code_dir / "User" / "globalStorage" / EXTENSION_ID / "pyenv" / windows_site_packages_path())
+    else:
+        for code_dir in ("Code", "Code - Insiders"):
+            candidates.append(home / ".config" / code_dir / "User" / "globalStorage" / EXTENSION_ID / "pyenv" / "lib" / version_tag / "site-packages")
 
     for candidate in candidates:
         if candidate.is_dir():
@@ -112,15 +143,42 @@ def ensure_required_packages(site_packages: Path) -> None:
 
 
 def ignore_stdlib(_: str, names: list[str]) -> set[str]:
-    ignored = {"__pycache__", "site-packages", "dist-packages"}
-    return {name for name in names if name in ignored or name.endswith((".pyc", ".pyo"))}
+    ignored = {
+        "__pycache__",
+        "dist-packages",
+        "ensurepip",
+        "idlelib",
+        "pydoc_data",
+        "site-packages",
+        "test",
+        "tests",
+        "tkinter",
+        "turtledemo",
+        "venv",
+        "_tkinter.pyd",
+        "tcl86t.dll",
+        "tk86t.dll",
+    }
+    return {
+        name
+        for name in names
+        if name in ignored
+        or name.startswith("config-")
+        or name.startswith("_test")
+        or name in {"_ctypes_test.pyd"}
+        or name.endswith((".pyc", ".pyo", ".pdb"))
+    }
 
 
 def ignore_site_packages(_: str, names: list[str]) -> set[str]:
     ignored_prefixes = ("pip", "setuptools", "wheel")
-    ignored = {"__pycache__"}
+    ignored = {"__pycache__", "test", "tests"}
     for name in names:
-        if name in ignored or name.endswith((".pyc", ".pyo")):
+        if (
+            name in ignored
+            or name.startswith("test_")
+            or name.endswith(("_test.py", ".pyc", ".pyo", ".pdb"))
+        ):
             ignored.add(name)
             continue
         if name.startswith(ignored_prefixes):
@@ -150,6 +208,14 @@ def manifest_source_site_packages(repo_root: Path, runtime_key: str, source_site
 
 
 def stage_runtime(repo_root: Path) -> Path:
+    if sys.platform == "linux":
+        return stage_linux_runtime(repo_root)
+    if sys.platform == "win32":
+        return stage_windows_runtime(repo_root)
+    raise RuntimeBuildError(f"Unsupported platform for bundled MicroPython runtime packaging: {sys.platform}")
+
+
+def stage_linux_runtime(repo_root: Path) -> Path:
     key = platform_key()
     runtime_root = repo_root / RUNTIME_ROOT_NAME
     destination = runtime_root / key
@@ -208,7 +274,7 @@ def stage_runtime(repo_root: Path) -> Path:
                 continue
             copy_entry(entry, site_packages_dest / entry.name)
 
-        site_packages_path = f"lib/{python_version_tag()}/site-packages"
+        site_packages_path = runtime_default_site_packages_path()
         manifest = {
             "platformKey": key,
             "pythonVersion": sys.version.split()[0],
@@ -220,24 +286,174 @@ def stage_runtime(repo_root: Path) -> Path:
         (temp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
         validate_runtime(temp_dir)
+        clean_runtime_artifacts(temp_dir)
 
-        if destination.exists():
-            shutil.rmtree(destination)
-        temp_dir.rename(destination)
+        replace_runtime_directory(temp_dir, destination)
         return destination
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
 
 
+def stage_windows_runtime(repo_root: Path) -> Path:
+    key = platform_key()
+    runtime_root = repo_root / RUNTIME_ROOT_NAME
+    destination = runtime_root / key
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    stdlib_source = Path(sysconfig.get_path("stdlib"))
+    if not stdlib_source.is_dir():
+        raise RuntimeBuildError(f"Python stdlib path does not exist: {stdlib_source}")
+
+    source_site_packages = resolve_source_site_packages(repo_root)
+    ensure_required_packages(source_site_packages)
+
+    interpreter_source = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+    if not interpreter_source.is_file():
+        raise RuntimeBuildError(f"Python executable not found: {interpreter_source}")
+
+    base_prefix = Path(sys.base_prefix).resolve()
+    dlls_source = base_prefix / "DLLs"
+    if not dlls_source.is_dir():
+        raise RuntimeBuildError(f"Python DLLs path does not exist: {dlls_source}")
+
+    temp_parent = runtime_root / ".tmp"
+    temp_parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"{key}-", dir=temp_parent))
+    try:
+        lib_dir = temp_dir / "Lib"
+        site_packages_dest = lib_dir / "site-packages"
+
+        site_packages_dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(interpreter_source, temp_dir / "python.exe")
+
+        pythonw_source = interpreter_source.with_name("pythonw.exe")
+        if pythonw_source.is_file():
+            shutil.copy2(pythonw_source, temp_dir / "pythonw.exe")
+
+        shutil.copytree(stdlib_source, lib_dir, symlinks=False, dirs_exist_ok=True, ignore=ignore_stdlib)
+        shutil.copytree(dlls_source, temp_dir / "DLLs", symlinks=False, dirs_exist_ok=True, ignore=ignore_stdlib)
+        copy_windows_runtime_dlls(base_prefix, interpreter_source.parent, temp_dir)
+
+        for entry in source_site_packages.iterdir():
+            if entry.name.startswith(("pip", "setuptools", "wheel")):
+                continue
+            if entry.name == "__pycache__":
+                continue
+            copy_entry(entry, site_packages_dest / entry.name)
+
+        site_packages_path = runtime_default_site_packages_path()
+        manifest = {
+            "platformKey": key,
+            "pythonVersion": sys.version.split()[0],
+            "pythonExecutable": "python.exe",
+            "sitePackages": site_packages_path,
+            "libraryPath": ".",
+            "sourceSitePackages": manifest_source_site_packages(repo_root, key, source_site_packages, site_packages_path),
+        }
+        (temp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        validate_runtime(temp_dir)
+        clean_runtime_artifacts(temp_dir)
+
+        replace_runtime_directory(temp_dir, destination)
+        return destination
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+
+def copy_windows_runtime_dlls(base_prefix: Path, executable_dir: Path, target_dir: Path) -> None:
+    patterns = ("python*.dll", "vcruntime*.dll", "ucrtbase.dll", "api-ms-win-*.dll")
+    copied: set[str] = set()
+
+    for source_dir in (executable_dir, base_prefix):
+        for pattern in patterns:
+            for source in source_dir.glob(pattern):
+                if not source.is_file():
+                    continue
+                target_name = source.name.lower()
+                if target_name in copied:
+                    continue
+                shutil.copy2(source, target_dir / source.name)
+                copied.add(target_name)
+
+
+def replace_runtime_directory(source: Path, destination: Path) -> None:
+    if destination.exists():
+        remove_runtime_directory(destination)
+
+    retry_filesystem_operation(
+        lambda: source.rename(destination),
+        f"replace bundled runtime directory {destination}",
+    )
+
+
+def remove_runtime_directory(path: Path) -> None:
+    retry_filesystem_operation(
+        lambda: shutil.rmtree(path, onerror=remove_readonly),
+        f"remove existing bundled runtime directory {path}",
+    )
+
+
+def remove_readonly(func: Callable[[str], None], path: str, _: object) -> None:
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    func(path)
+
+
+def retry_filesystem_operation(operation: Callable[[], None], description: str) -> None:
+    last_error: OSError | None = None
+    for _ in range(20):
+        try:
+            operation()
+            return
+        except OSError as exc:
+            last_error = exc
+            if not should_retry_filesystem_error(exc):
+                break
+            time.sleep(0.5)
+
+    if last_error is None:
+        return
+
+    if sys.platform == "win32" and isinstance(last_error, PermissionError):
+        raise RuntimeBuildError(
+            f"Could not {description}: {last_error}. Close any VS Code windows or Python processes using the runtime. "
+            "If Windows still reports Access is denied, reset ownership/ACLs for the generated runtime directory and rerun staging."
+        ) from last_error
+
+    raise last_error
+
+
+def should_retry_filesystem_error(exc: OSError) -> bool:
+    if isinstance(exc, PermissionError):
+        return True
+    if sys.platform == "win32":
+        return getattr(exc, "winerror", None) in {5, 32, 33, 145}
+    return False
+
+
+def clean_runtime_artifacts(runtime_dir: Path) -> None:
+    for cache_dir in runtime_dir.rglob("__pycache__"):
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    for pattern in ("*.pyc", "*.pyo", "*.pdb"):
+        for path in runtime_dir.rglob(pattern):
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+
 def validate_runtime(runtime_dir: Path) -> None:
     manifest = json.loads((runtime_dir / "manifest.json").read_text(encoding="utf-8"))
     python_path = runtime_dir / manifest["pythonExecutable"]
-    env = os.environ.copy()
-    env["PYTHONHOME"] = str(runtime_dir)
-    env["PYTHONPATH"] = str(runtime_dir / manifest["sitePackages"])
-    env["PYTHONNOUSERSITE"] = "1"
-    env["LD_LIBRARY_PATH"] = str(runtime_dir / manifest["libraryPath"])
+    env = create_runtime_env(runtime_dir, manifest)
 
     result = subprocess.run(
         [
@@ -255,6 +471,41 @@ def validate_runtime(runtime_dir: Path) -> None:
         raise RuntimeBuildError(f"Bundled runtime validation failed.\n{details}")
 
 
+def create_runtime_env(runtime_dir: Path, manifest: dict[str, str]) -> dict[str, str]:
+    env = os.environ.copy()
+    library_path = runtime_dir / manifest["libraryPath"]
+    site_packages = runtime_dir / manifest["sitePackages"]
+    env["PYTHONHOME"] = str(runtime_dir)
+    env["PYTHONPATH"] = str(site_packages)
+    env["PYTHONNOUSERSITE"] = "1"
+
+    if sys.platform == "win32":
+        path_entries = [str(runtime_dir), str(runtime_dir / "DLLs"), str(runtime_dir / "Scripts"), env.get("PATH", "")]
+        env["PATH"] = os.pathsep.join(entry for entry in path_entries if entry)
+    else:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(entry for entry in (str(library_path), env.get("LD_LIBRARY_PATH", "")) if entry)
+        env["PATH"] = os.pathsep.join(entry for entry in (str(runtime_dir / "bin"), env.get("PATH", "")) if entry)
+
+    return env
+
+
+def directory_size(path: Path) -> int:
+    total = 0
+    for entry in path.rglob("*"):
+        if entry.is_file():
+            total += entry.stat().st_size
+    return total
+
+
+def format_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "K", "M", "G"):
+        if value < 1024 or unit == "G":
+            return f"{value:.1f}{unit}" if unit != "B" else f"{int(value)}B"
+        value /= 1024
+    return f"{value:.1f}G"
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     try:
@@ -263,14 +514,7 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    size = subprocess.run(
-        ["du", "-sh", str(destination)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if size.returncode == 0 and size.stdout.strip():
-        print(size.stdout.strip())
+    print(f"{format_size(directory_size(destination))}\t{destination}")
     print(f"Bundled runtime staged at {destination}")
     return 0
 

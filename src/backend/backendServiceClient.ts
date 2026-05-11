@@ -559,18 +559,29 @@ export class BackendServiceClient implements vscode.Disposable {
   }
 
   private getRuntimePlatformKey(): string {
-    if (process.platform !== "linux") {
-      throw new Error(`MicroPython bundled runtime is only available on Linux. Current platform: ${process.platform}.`);
+    if (process.platform === "linux") {
+      switch (process.arch) {
+        case "x64":
+          return "linux-x64";
+        case "arm64":
+          return "linux-arm64";
+        default:
+          throw new Error(`MicroPython bundled runtime is not available for Linux architecture: ${process.arch}.`);
+      }
     }
 
-    switch (process.arch) {
-      case "x64":
-        return "linux-x64";
-      case "arm64":
-        return "linux-arm64";
-      default:
-        throw new Error(`MicroPython bundled runtime is not available for Linux architecture: ${process.arch}.`);
+    if (process.platform === "win32") {
+      switch (process.arch) {
+        case "x64":
+          return "win32-x64";
+        case "arm64":
+          return "win32-arm64";
+        default:
+          throw new Error(`MicroPython bundled runtime is not available for Windows architecture: ${process.arch}.`);
+      }
     }
+
+    throw new Error(`MicroPython bundled runtime is not available for platform: ${process.platform}.`);
   }
 
   private async loadRuntimeManifest(
@@ -613,7 +624,9 @@ export class BackendServiceClient implements vscode.Disposable {
       PYTHONHOME: runtimePath,
       PYTHONPATH: sitePackagesPath,
       PYTHONNOUSERSITE: "1",
-      PATH: [path.join(runtimePath, "bin"), process.env.PATH].filter((value): value is string => Boolean(value)).join(path.delimiter),
+      PATH: [...this.runtimePathEntries(runtimePath), process.env.PATH]
+        .filter((value): value is string => Boolean(value))
+        .join(path.delimiter),
     };
 
     if (process.platform === "linux") {
@@ -625,9 +638,21 @@ export class BackendServiceClient implements vscode.Disposable {
     return env;
   }
 
+  private runtimePathEntries(runtimePath: string): string[] {
+    if (process.platform === "win32") {
+      return [
+        runtimePath,
+        path.join(runtimePath, "DLLs"),
+        path.join(runtimePath, "Scripts"),
+      ];
+    }
+
+    return [path.join(runtimePath, "bin")];
+  }
+
   private async fileExists(targetPath: string): Promise<boolean> {
     try {
-      await fs.promises.access(targetPath, fs.constants.X_OK);
+      await fs.promises.access(targetPath, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
       return true;
     } catch {
       return false;
