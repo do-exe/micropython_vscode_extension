@@ -5,10 +5,13 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { spawn } from "child_process";
 import * as vscode from "vscode";
 import type { BackendServiceClient } from "../backend/backendServiceClient";
 import type { MicroPythonExtensionController } from "../controller/extensionController";
+
+const CODEX_MCP_SERVER_NAME = "micropython";
+const CODEX_MCP_MANAGED_COMMENT = "# Managed by MicroPython VS Code Extension.";
+const CODEX_MCP_REFRESH_COMMENT = "# This MCP server block is refreshed on extension activation.";
 
 type MicroPythonRunAndTestInput = {
   port?: string;
@@ -50,18 +53,17 @@ type BackendOkResult = {
   error?: string;
 };
 
-type AgentProcessResult = {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-};
-
 type AgentMcpLaunchConfig = {
   name: string;
   command: string;
   args: string[];
   env: Record<string, string>;
   serverPath: string;
+};
+
+type CodexMcpConfigTarget = {
+  path: string;
+  required: boolean;
 };
 
 export class AICommands {
@@ -264,6 +266,20 @@ export class AICommands {
     );
   }
 
+  public async ensureCodexMcpConfigOnActivation(): Promise<void> {
+    try {
+      const launch = await this.getAgentMcpLaunchConfig();
+      const result = await this.writeCodexMcpConfig(launch);
+      this.output.appendLine(`[${new Date().toISOString()}] Codex MCP Auto Configuration`);
+      this.output.appendLine(this.serializeResult(result));
+      this.output.appendLine("");
+    } catch (error) {
+      this.output.appendLine(`[${new Date().toISOString()}] Codex MCP Auto Configuration Failed`);
+      this.output.appendLine(this.errorText(error));
+      this.output.appendLine("");
+    }
+  }
+
   private registerLanguageModelTools(context: vscode.ExtensionContext): void {
     const lm = vscode.lm;
     if (!lm || typeof lm.registerTool !== "function") {
@@ -355,7 +371,7 @@ export class AICommands {
       },
       {
         label: "Configure Codex global MCP",
-        description: "Runs codex mcp add so Codex sessions receive MicroPython tools.",
+        description: "Writes Codex config.toml so Codex sessions receive MicroPython tools.",
         target: "codex",
       },
       {
@@ -381,7 +397,7 @@ export class AICommands {
 
     if (choice.target === "codex" || choice.target === "both") {
       const confirmation = await vscode.window.showWarningMessage(
-        "Configure Codex global MCP access for MicroPython? This updates your Codex MCP configuration so new Codex sessions can see the MicroPython tools.",
+        "Configure Codex global MCP access for MicroPython? This updates Codex config.toml so new Codex sessions can see the MicroPython tools.",
         { modal: true },
         "Configure Codex",
       );
@@ -404,7 +420,7 @@ export class AICommands {
     vscodeLanguageModelTools: { available: boolean; registered: boolean };
     vscodeExtensionMcpProvider: { available: boolean; registered: boolean };
     vscodeWorkspaceMcp: { configured: boolean; path: string; error?: string };
-    codexGlobalMcp: { codexCliAvailable: boolean; configured: boolean; error?: string };
+    codexGlobalMcp: { configured: boolean; paths: string[]; checkedPaths: string[]; error?: string };
     guidance: string[];
   }> {
     const workspaceMcpPath = this.getWorkspaceMcpConfigPath();
@@ -437,7 +453,7 @@ export class AICommands {
       guidance: [
         "Copilot/VS Code Chat can use native Language Model Tools when the chat runtime passes extension tools through.",
         "VS Code MCP servers shown in Agent Customizations are not automatically inherited by every third-party agent runtime.",
-        "Use MicroPython: Configure AI Agent MCP Access to write .vscode/mcp.json and/or run codex mcp add for Codex.",
+        "Use MicroPython: Configure AI Agent MCP Access to write .vscode/mcp.json and/or refresh Codex config.toml.",
         "Restart or refresh already-open agent sessions after changing MCP configuration.",
       ],
     };
@@ -753,7 +769,7 @@ export class AICommands {
     const launch = await this.backendClient.getBundledPythonLaunch();
     const serverPath = path.join(this.extensionPath ?? this.controllerExtensionPath(), "backend", "mcp_server.py");
     return {
-      name: "micropython",
+      name: CODEX_MCP_SERVER_NAME,
       command: launch.pythonPath,
       args: [serverPath],
       env: this.minimalMcpEnvironment(launch.env),
@@ -784,10 +800,29 @@ export class AICommands {
     for (const key of keys) {
       const value = env[key];
       if (value) {
-        normalized[key] = value;
+        normalized[key] = key === "PATH" ? this.sanitizeMcpPath(value) : value;
       }
     }
     return normalized;
+  }
+
+  private sanitizeMcpPath(value: string): string {
+    const blockedFragments = [
+      `${path.sep}.codex${path.sep}tmp${path.sep}`,
+      `${path.sep}.vscode${path.sep}extensions${path.sep}openai.chatgpt-`,
+    ];
+    const entries: string[] = [];
+    const seen = new Set<string>();
+
+    for (const entry of value.split(path.delimiter)) {
+      if (!entry || blockedFragments.some((fragment) => entry.includes(fragment)) || seen.has(entry)) {
+        continue;
+      }
+      seen.add(entry);
+      entries.push(entry);
+    }
+
+    return entries.join(path.delimiter);
   }
 
   private getWorkspaceMcpConfigPath(): string | undefined {
@@ -853,81 +888,215 @@ export class AICommands {
   }
 
   private async configureCodexMcp(launch: AgentMcpLaunchConfig): Promise<unknown> {
-    const existing = await this.runAgentProcess("codex", ["mcp", "get", launch.name], 5000);
-    if (existing.code === 0) {
-      const removed = await this.runAgentProcess("codex", ["mcp", "remove", launch.name], 10000);
-      if (removed.code !== 0) {
-        throw new Error(`Failed to remove existing Codex MCP server: ${removed.stderr || removed.stdout}`);
+    const result = await this.writeCodexMcpConfig(launch);
+    return {
+      ok: true,
+      agent: "Codex",
+      server: launch.name,
+      targets: result.targets,
+      note: "Restart new Codex sessions so the MCP tool list is loaded at session startup.",
+    };
+  }
+
+  private async getCodexMcpStatus(): Promise<{ configured: boolean; paths: string[]; checkedPaths: string[]; error?: string }> {
+    const targets = await this.getCodexMcpConfigTargets();
+    const serverPath = path.join(this.extensionPath ?? this.controllerExtensionPath(), "backend", "mcp_server.py");
+    const configuredPaths: string[] = [];
+    const errors: string[] = [];
+
+    for (const target of targets) {
+      try {
+        if (await this.codexMcpConfigHasMicroPython(target.path, serverPath)) {
+          configuredPaths.push(target.path);
+        }
+      } catch (error) {
+        errors.push(`${target.path}: ${this.errorText(error)}`);
       }
     }
 
-    const args = ["mcp", "add"];
-    for (const [key, value] of Object.entries(launch.env)) {
-      args.push("--env", `${key}=${value}`);
-    }
-    args.push(launch.name, "--", launch.command, ...launch.args);
+    return {
+      configured: configuredPaths.length > 0,
+      paths: configuredPaths,
+      checkedPaths: targets.map((target) => target.path),
+      error: errors.length > 0 ? errors.join("; ") : undefined,
+    };
+  }
 
-    const added = await this.runAgentProcess("codex", args, 15000);
-    if (added.code !== 0) {
-      throw new Error(`Failed to configure Codex MCP server: ${added.stderr || added.stdout}`);
+  private async writeCodexMcpConfig(launch: AgentMcpLaunchConfig): Promise<{ ok: boolean; agent: string; server: string; targets: unknown[] }> {
+    const targets = await this.getCodexMcpConfigTargets();
+    const results: Array<Record<string, unknown>> = [];
+
+    for (const target of targets) {
+      try {
+        results.push({
+          ok: true,
+          ...(await this.writeCodexMcpConfigPath(target.path, launch)),
+          required: target.required,
+        });
+      } catch (error) {
+        results.push({
+          ok: false,
+          path: target.path,
+          required: target.required,
+          error: this.errorText(error),
+        });
+      }
+    }
+
+    const requiredFailures = results.filter((result) => result.ok === false && result.required === true);
+    if (requiredFailures.length > 0) {
+      throw new Error(`Failed to update Codex MCP config: ${this.serializeResult(requiredFailures)}`);
     }
 
     return {
       ok: true,
       agent: "Codex",
       server: launch.name,
-      command: `codex ${args.map((part) => JSON.stringify(part)).join(" ")}`,
-      note: "Restart new Codex sessions so the MCP tool list is loaded at session startup.",
+      targets: results,
     };
   }
 
-  private async getCodexMcpStatus(): Promise<{ codexCliAvailable: boolean; configured: boolean; error?: string }> {
-    try {
-      const result = await this.runAgentProcess("codex", ["mcp", "get", "micropython"], 5000);
-      if (result.code === 0) {
-        return { codexCliAvailable: true, configured: true };
+  private async getCodexMcpConfigTargets(): Promise<CodexMcpConfigTarget[]> {
+    const targets: CodexMcpConfigTarget[] = [];
+    const seen = new Set<string>();
+    const addTarget = (configPath: string, required: boolean): void => {
+      const normalized = path.normalize(configPath);
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        targets.push({ path: normalized, required });
       }
+    };
 
-      const listResult = await this.runAgentProcess("codex", ["mcp", "list"], 5000);
-      return {
-        codexCliAvailable: listResult.code === 0,
-        configured: false,
-        error: listResult.code === 0 ? undefined : (listResult.stderr || listResult.stdout || "Codex MCP status check failed."),
-      };
-    } catch (error) {
-      return {
-        codexCliAvailable: false,
-        configured: false,
-        error: this.errorText(error),
-      };
+    const codexHome = process.env.CODEX_HOME?.trim();
+    if (codexHome) {
+      addTarget(path.join(codexHome, "config.toml"), true);
     }
+
+    addTarget(path.join(os.homedir(), ".codex", "config.toml"), true);
+
+    if (process.platform === "linux") {
+      const snapCurrentPath = path.join(os.homedir(), "snap", "codex", "current");
+      try {
+        const snapCurrentStat = await fs.promises.stat(snapCurrentPath);
+        if (snapCurrentStat.isDirectory()) {
+          const resolvedSnapPath = await fs.promises.realpath(snapCurrentPath);
+          addTarget(path.join(resolvedSnapPath, "config.toml"), false);
+        }
+      } catch {
+        // Snap Codex is optional. The normal Codex config above is always maintained.
+      }
+    }
+
+    return targets;
   }
 
-  private runAgentProcess(command: string, args: string[], timeoutMs: number): Promise<AgentProcessResult> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { shell: false });
-      let stdout = "";
-      let stderr = "";
-      const timeout = setTimeout(() => {
-        child.kill();
-        reject(new Error(`${command} timed out after ${timeoutMs}ms.`));
-      }, timeoutMs);
+  private async writeCodexMcpConfigPath(configPath: string, launch: AgentMcpLaunchConfig): Promise<Record<string, unknown>> {
+    let existing = "";
+    let existed = true;
+    try {
+      existing = await fs.promises.readFile(configPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+      existed = false;
+    }
 
-      child.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
-      });
-      child.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
-      });
-      child.on("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timeout);
-        resolve({ code, stdout, stderr });
-      });
-    });
+    const next = this.updateCodexMcpToml(existing, launch);
+    if (next !== existing) {
+      await fs.promises.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.promises.writeFile(configPath, next, "utf8");
+    }
+
+    return {
+      path: configPath,
+      changed: next !== existing,
+      created: !existed,
+    };
+  }
+
+  private async codexMcpConfigHasMicroPython(configPath: string, serverPath: string): Promise<boolean> {
+    let raw: string;
+    try {
+      raw = await fs.promises.readFile(configPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return false;
+      }
+      throw error;
+    }
+
+    return this.tomlHasTable(raw, `mcp_servers.${CODEX_MCP_SERVER_NAME}`)
+      && raw.includes(this.tomlString(serverPath));
+  }
+
+  private updateCodexMcpToml(source: string, launch: AgentMcpLaunchConfig): string {
+    const targetTables = new Set([
+      `mcp_servers.${launch.name}`,
+      `mcp_servers.${launch.name}.env`,
+    ]);
+    const lines = source.split(/\r?\n/);
+    const kept: string[] = [];
+    let skippingManagedTable = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === CODEX_MCP_MANAGED_COMMENT || trimmed === CODEX_MCP_REFRESH_COMMENT) {
+        continue;
+      }
+
+      const tableName = this.parseTomlTableName(trimmed);
+      if (tableName !== undefined) {
+        skippingManagedTable = targetTables.has(tableName);
+      }
+
+      if (!skippingManagedTable) {
+        kept.push(line);
+      }
+    }
+
+    const prefix = kept.join("\n").trimEnd();
+    const block = this.buildCodexMcpTomlBlock(launch);
+    return `${prefix ? `${prefix}\n\n` : ""}${block}\n`;
+  }
+
+  private buildCodexMcpTomlBlock(launch: AgentMcpLaunchConfig): string {
+    const lines = [
+      CODEX_MCP_MANAGED_COMMENT,
+      CODEX_MCP_REFRESH_COMMENT,
+      `[mcp_servers.${launch.name}]`,
+      `command = ${this.tomlString(launch.command)}`,
+      `args = ${this.tomlStringArray(launch.args)}`,
+      "",
+      `[mcp_servers.${launch.name}.env]`,
+    ];
+
+    for (const [key, value] of Object.entries(launch.env)) {
+      lines.push(`${this.tomlKey(key)} = ${this.tomlString(value)}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  private tomlHasTable(source: string, tableName: string): boolean {
+    return source.split(/\r?\n/).some((line) => this.parseTomlTableName(line.trim()) === tableName);
+  }
+
+  private parseTomlTableName(line: string): string | undefined {
+    const match = /^\[([^\]]+)\]$/.exec(line);
+    return match?.[1].trim();
+  }
+
+  private tomlKey(key: string): string {
+    return /^[A-Za-z0-9_-]+$/.test(key) ? key : this.tomlString(key);
+  }
+
+  private tomlStringArray(values: string[]): string {
+    return `[${values.map((value) => this.tomlString(value)).join(", ")}]`;
+  }
+
+  private tomlString(value: string): string {
+    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\u0008/g, "\\b").replace(/\t/g, "\\t").replace(/\n/g, "\\n").replace(/\f/g, "\\f").replace(/\r/g, "\\r")}"`;
   }
 
   private errorText(error: unknown): string {
