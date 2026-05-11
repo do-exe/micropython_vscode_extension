@@ -13,7 +13,8 @@ import micropython_backend as backend
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "micropython-vscode-extension"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.4.0"
+MCP_TOOL_SESSION_RELEASE_REASON = "mcp-tool-complete"
 
 
 class McpError(Exception):
@@ -33,13 +34,16 @@ class MicroPythonMcpServer:
         )
 
     def serve(self) -> None:
-        while True:
-            message = self._read_message()
-            if message is None:
-                return
-            response = self._handle_message(message)
-            if response is not None:
-                self._write_message(response)
+        try:
+            while True:
+                message = self._read_message()
+                if message is None:
+                    return
+                response = self._handle_message(message)
+                if response is not None:
+                    self._write_message(response)
+        finally:
+            self._release_device_session("mcp-server-stopped")
 
     def _handle_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = str(message.get("method", ""))
@@ -135,132 +139,143 @@ class MicroPythonMcpServer:
         delete_extraneous = bool(arguments.get("deleteExtraneous", False))
         progress: list[str] = []
 
-        result = self._session.sync_folder(
-            port=port,
-            local_folder=project_folder,
-            remote_folder=remote_root,
-            delete_extraneous=delete_extraneous,
-            progress_callback=progress.append,
-        )
-
-        return {
-            "ok": bool(result.get("ok")),
-            "port": port,
-            "projectFolder": project_folder,
-            "remoteRoot": remote_root,
-            "deleteExtraneous": delete_extraneous,
-            "result": result,
-            "progress": progress[-80:],
-            "guidance": (
-                "Project sync used the MicroPython extension backend. "
-                "Do not retry with mpremote, ampy, esptool, or raw serial unless this result says unsupported."
-            ),
-        }
-
-    def _tool_run_and_test(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        port = self._resolve_port(arguments)
-        project_folder = self._resolve_project_folder(arguments, required=False)
-        remote_root = self._normalize_remote_root(self._optional_string(arguments, "remoteRoot"))
-        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
-        code = self._optional_string(arguments, "code", trim=False)
-        local_file = self._resolve_local_file(arguments, project_folder)
-        sync_project = bool(arguments.get("syncProject", bool(project_folder and code is None)))
-        delete_extraneous = bool(arguments.get("deleteExtraneous", False))
-        steps: list[dict[str, Any]] = []
-        started_at = time.monotonic()
-
-        if sync_project:
-            if not project_folder:
-                return {
-                    "ok": False,
-                    "port": port,
-                    "failedStep": "resolveProjectFolder",
-                    "error": "syncProject was requested, but no projectFolder was provided.",
-                    "steps": steps,
-                }
-            progress: list[str] = []
-            sync_result = self._session.sync_folder(
+        try:
+            result = self._session.sync_folder(
                 port=port,
                 local_folder=project_folder,
                 remote_folder=remote_root,
                 delete_extraneous=delete_extraneous,
                 progress_callback=progress.append,
             )
-            steps.append({
-                "step": "syncProject",
-                "ok": bool(sync_result.get("ok")),
-                "result": sync_result,
-                "progress": progress[-80:],
-            })
-            if not sync_result.get("ok"):
-                return {
-                    "ok": False,
-                    "port": port,
-                    "failedStep": "syncProject",
-                    "error": sync_result.get("error", "MicroPython project sync failed."),
-                    "steps": steps,
-                }
-
-        temp_path: Path | None = None
-        run_file = local_file
-        try:
-            if code is not None:
-                handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py", delete=False)
-                try:
-                    handle.write(code)
-                finally:
-                    handle.close()
-                temp_path = Path(handle.name)
-                run_file = str(temp_path)
-
-            if not run_file:
-                return {
-                    "ok": False,
-                    "port": port,
-                    "failedStep": "resolveRunFile",
-                    "error": "No MicroPython file or code was provided, and no project main.py was found.",
-                    "steps": steps,
-                }
-
-            stdout_lines: list[str] = []
-            stderr_lines: list[str] = []
-            run_result = self._session.run_file(
-                port=port,
-                local_file=run_file,
-                timeout_seconds=timeout,
-                stdout_line_callback=stdout_lines.append,
-                stderr_line_callback=stderr_lines.append,
-            )
-            steps.append({
-                "step": "run",
-                "ok": bool(run_result.get("ok")),
-                "result": run_result,
-                "stdoutLines": stdout_lines,
-                "stderrLines": stderr_lines,
-            })
 
             return {
-                "ok": bool(run_result.get("ok")),
+                "ok": bool(result.get("ok")),
                 "port": port,
-                "localFile": local_file,
-                "usedInlineCode": code is not None,
-                "syncedProject": sync_project,
-                "durationMs": int((time.monotonic() - started_at) * 1000),
-                "stdout": run_result.get("output", ""),
-                "error": run_result.get("error"),
-                "steps": steps,
-                "nextAction": (
-                    "The MicroPython run completed. Inspect stdout for test assertions or device output."
-                    if run_result.get("ok")
-                    else "Fix the reported MicroPython error, then call micropython_run_and_test again. Do not switch to mpremote, ampy, esptool, or raw serial."
+                "projectFolder": project_folder,
+                "remoteRoot": remote_root,
+                "deleteExtraneous": delete_extraneous,
+                "result": result,
+                "progress": progress[-80:],
+                "portReleasedAfterTool": True,
+                "guidance": (
+                    "Project sync used the MicroPython extension backend and released the serial port after the tool call. "
+                    "Do not retry with mpremote, ampy, esptool, or raw serial unless this result says unsupported."
                 ),
             }
         finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink()
-                except OSError:
-                    pass
+            self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
+
+    def _tool_run_and_test(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        port = self._resolve_port(arguments)
+        try:
+            project_folder = self._resolve_project_folder(arguments, required=False)
+            remote_root = self._normalize_remote_root(self._optional_string(arguments, "remoteRoot"))
+            timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+            code = self._optional_string(arguments, "code", trim=False)
+            local_file = self._resolve_local_file(arguments, project_folder)
+            sync_project = bool(arguments.get("syncProject", bool(project_folder and code is None)))
+            delete_extraneous = bool(arguments.get("deleteExtraneous", False))
+            steps: list[dict[str, Any]] = []
+            started_at = time.monotonic()
+
+            if sync_project:
+                if not project_folder:
+                    return {
+                        "ok": False,
+                        "port": port,
+                        "failedStep": "resolveProjectFolder",
+                        "error": "syncProject was requested, but no projectFolder was provided.",
+                        "steps": steps,
+                        "portReleasedAfterTool": True,
+                    }
+                progress: list[str] = []
+                sync_result = self._session.sync_folder(
+                    port=port,
+                    local_folder=project_folder,
+                    remote_folder=remote_root,
+                    delete_extraneous=delete_extraneous,
+                    progress_callback=progress.append,
+                )
+                steps.append({
+                    "step": "syncProject",
+                    "ok": bool(sync_result.get("ok")),
+                    "result": sync_result,
+                    "progress": progress[-80:],
+                })
+                if not sync_result.get("ok"):
+                    return {
+                        "ok": False,
+                        "port": port,
+                        "failedStep": "syncProject",
+                        "error": sync_result.get("error", "MicroPython project sync failed."),
+                        "steps": steps,
+                        "portReleasedAfterTool": True,
+                    }
+
+            temp_path: Path | None = None
+            run_file = local_file
+            try:
+                if code is not None:
+                    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py", delete=False)
+                    try:
+                        handle.write(code)
+                    finally:
+                        handle.close()
+                    temp_path = Path(handle.name)
+                    run_file = str(temp_path)
+
+                if not run_file:
+                    return {
+                        "ok": False,
+                        "port": port,
+                        "failedStep": "resolveRunFile",
+                        "error": "No MicroPython file or code was provided, and no project main.py was found.",
+                        "steps": steps,
+                        "portReleasedAfterTool": True,
+                    }
+
+                stdout_lines: list[str] = []
+                stderr_lines: list[str] = []
+                run_result = self._session.run_file(
+                    port=port,
+                    local_file=run_file,
+                    timeout_seconds=timeout,
+                    stdout_line_callback=stdout_lines.append,
+                    stderr_line_callback=stderr_lines.append,
+                )
+                steps.append({
+                    "step": "run",
+                    "ok": bool(run_result.get("ok")),
+                    "result": run_result,
+                    "stdoutLines": stdout_lines,
+                    "stderrLines": stderr_lines,
+                })
+
+                return {
+                    "ok": bool(run_result.get("ok")),
+                    "port": port,
+                    "localFile": local_file,
+                    "usedInlineCode": code is not None,
+                    "syncedProject": sync_project,
+                    "durationMs": int((time.monotonic() - started_at) * 1000),
+                    "stdout": run_result.get("output", ""),
+                    "error": run_result.get("error"),
+                    "steps": steps,
+                    "portReleasedAfterTool": True,
+                    "nextAction": (
+                        "The MicroPython run completed and the serial port was released. Inspect stdout for test assertions or device output."
+                        if run_result.get("ok")
+                        else "Fix the reported MicroPython error, then call micropython_run_and_test again. Do not switch to mpremote, ampy, esptool, or raw serial."
+                    ),
+                }
+            finally:
+                if temp_path is not None:
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+        finally:
+            self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
 
     def _tools(self) -> list[dict[str, Any]]:
         return [
@@ -340,7 +355,9 @@ class MicroPythonMcpServer:
                             "- Call `micropython_device_status` before selecting a device strategy.",
                             "- Call `micropython_sync_project` to upload a project folder.",
                             "- Call `micropython_run_and_test` to sync, run, capture output, and report errors.",
+                            "- MCP tools release the serial port after each sync/run call so the normal extension UI can use it next.",
                             "- Do not use `mpremote`, `ampy`, `esptool`, or raw serial directly unless a MicroPython MCP tool reports unsupported.",
+                            "- If the port is busy, wait for the active tool/UI operation to finish or close the MicroPython terminal session.",
                             "- If multiple devices are detected, pass the intended serial `port` argument.",
                         ]),
                     }
@@ -430,6 +447,12 @@ class MicroPythonMcpServer:
         if not isinstance(value, dict):
             raise McpError(-32602, "Expected object parameters.")
         return value
+
+    def _release_device_session(self, reason: str) -> None:
+        try:
+            self._session.close(emit_event=False, reason=reason)
+        except Exception:
+            pass
 
     def _read_message(self) -> dict[str, Any] | None:
         if self._stdio_mode == "lines":
