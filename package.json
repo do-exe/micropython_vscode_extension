@@ -551,7 +551,7 @@
     }
   },
   "scripts": {
-    "stage-runtime": "python3 scripts/stage_runtime.py",
+    "stage-runtime": "node scripts/run_stage_runtime.js",
     "build": "npm run stage-runtime && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
