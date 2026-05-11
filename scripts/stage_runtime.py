@@ -159,14 +159,26 @@ def ignore_stdlib(_: str, names: list[str]) -> set[str]:
         "tcl86t.dll",
         "tk86t.dll",
     }
-    return {name for name in names if name in ignored or name.endswith((".pyc", ".pyo", ".pdb"))}
+    return {
+        name
+        for name in names
+        if name in ignored
+        or name.startswith("config-")
+        or name.startswith("_test")
+        or name in {"_ctypes_test.pyd"}
+        or name.endswith((".pyc", ".pyo", ".pdb"))
+    }
 
 
 def ignore_site_packages(_: str, names: list[str]) -> set[str]:
     ignored_prefixes = ("pip", "setuptools", "wheel")
     ignored = {"__pycache__", "test", "tests"}
     for name in names:
-        if name in ignored or name.endswith((".pyc", ".pyo", ".pdb")):
+        if (
+            name in ignored
+            or name.startswith("test_")
+            or name.endswith(("_test.py", ".pyc", ".pyo", ".pdb"))
+        ):
             ignored.add(name)
             continue
         if name.startswith(ignored_prefixes):
