@@ -143,15 +143,30 @@ def ensure_required_packages(site_packages: Path) -> None:
 
 
 def ignore_stdlib(_: str, names: list[str]) -> set[str]:
-    ignored = {"__pycache__", "site-packages", "dist-packages"}
-    return {name for name in names if name in ignored or name.endswith((".pyc", ".pyo"))}
+    ignored = {
+        "__pycache__",
+        "dist-packages",
+        "ensurepip",
+        "idlelib",
+        "pydoc_data",
+        "site-packages",
+        "test",
+        "tests",
+        "tkinter",
+        "turtledemo",
+        "venv",
+        "_tkinter.pyd",
+        "tcl86t.dll",
+        "tk86t.dll",
+    }
+    return {name for name in names if name in ignored or name.endswith((".pyc", ".pyo", ".pdb"))}
 
 
 def ignore_site_packages(_: str, names: list[str]) -> set[str]:
     ignored_prefixes = ("pip", "setuptools", "wheel")
-    ignored = {"__pycache__"}
+    ignored = {"__pycache__", "test", "tests"}
     for name in names:
-        if name in ignored or name.endswith((".pyc", ".pyo")):
+        if name in ignored or name.endswith((".pyc", ".pyo", ".pdb")):
             ignored.add(name)
             continue
         if name.startswith(ignored_prefixes):
@@ -259,6 +274,7 @@ def stage_linux_runtime(repo_root: Path) -> Path:
         (temp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
         validate_runtime(temp_dir)
+        clean_runtime_artifacts(temp_dir)
 
         replace_runtime_directory(temp_dir, destination)
         return destination
@@ -326,6 +342,7 @@ def stage_windows_runtime(repo_root: Path) -> Path:
         (temp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
         validate_runtime(temp_dir)
+        clean_runtime_artifacts(temp_dir)
 
         replace_runtime_directory(temp_dir, destination)
         return destination
@@ -405,6 +422,20 @@ def should_retry_filesystem_error(exc: OSError) -> bool:
     if sys.platform == "win32":
         return getattr(exc, "winerror", None) in {5, 32, 33, 145}
     return False
+
+
+def clean_runtime_artifacts(runtime_dir: Path) -> None:
+    for cache_dir in runtime_dir.rglob("__pycache__"):
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    for pattern in ("*.pyc", "*.pyo", "*.pdb"):
+        for path in runtime_dir.rglob(pattern):
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
 
 
 def validate_runtime(runtime_dir: Path) -> None:

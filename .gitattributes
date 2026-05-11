@@ -1,1 +1,2 @@
 firmware/**/*.bin binary
+runtime/win32-x64/** -text -diff

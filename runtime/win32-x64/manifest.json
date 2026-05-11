@@ -1,0 +1,8 @@
+{
+  "platformKey": "win32-x64",
+  "pythonVersion": "3.11.15",
+  "pythonExecutable": "python.exe",
+  "sitePackages": "Lib/site-packages",
+  "libraryPath": ".",
+  "sourceSitePackages": ".venv-runtime/Lib/site-packages"
+}
