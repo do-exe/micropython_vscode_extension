@@ -4,5 +4,5 @@
   "pythonExecutable": "bin/python3",
   "sitePackages": "lib/python3.12/site-packages",
   "libraryPath": "lib",
-  "sourceSitePackages": "lib/python3.12/site-packages"
+  "sourceSitePackages": ".venv-runtime/lib/python3.12/site-packages"
 }
