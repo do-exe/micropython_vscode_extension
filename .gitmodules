@@ -1,0 +1,3 @@
+[submodule "driver_xAI"]
+	path = driver_xAI
+	url = https://github.com/do-exe/driver_xAI.git
