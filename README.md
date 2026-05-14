@@ -38,7 +38,16 @@ The extension also exposes native VS Code Language Model Tools and a bundled MCP
 - `micropython_sync_project`: Upload a local project folder through the extension backend.
 - `micropython_run_and_test`: Sync, run, capture output, and return structured errors for MicroPython code.
 
-The MCP server also publishes `micropython://agent-guide` and `micropython://device-status` resources for clients that surface MCP resources.
+The bundled MCP server also exposes Driver xAI hardware tools:
+
+- `micropython_module_catalog`: List vendored Driver xAI module types, setup templates, and commands.
+- `micropython_hardware_configure`: Save connected hardware modules, including pins and options.
+- `micropython_hardware_list`: List saved hardware and the commands each module exposes.
+- `micropython_hardware_run`: Run a command on a saved hardware module.
+
+For CLI-first setup, run commands such as `python backend/driver_xAI_cli.py add board_led_pin5 pwm_led --pin pin=5 --option active_high=false`, then inspect the saved circuit with `python backend/driver_xAI_cli.py list`.
+
+The MCP server publishes `micropython://agent-guide`, `micropython://device-status`, `micropython://module-catalog`, and `micropython://hardware-profile` resources for clients that surface MCP resources.
 
 Some agent runtimes only read their own MCP configuration at startup. Use `MicroPython: AI Agent MCP Status` to see whether VS Code tools, the VS Code MCP provider, workspace MCP config, and Codex global MCP config can see the MicroPython server. Use `MicroPython: Configure AI Agent MCP Access` to write `.vscode/mcp.json` and/or sync Codex with `codex mcp add`.
 

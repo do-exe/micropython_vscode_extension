@@ -8,12 +8,13 @@ import tempfile
 import time
 from typing import Any, Callable
 
+from driver_xAI_adapter import DriverXAIAdapter, DriverXAIError
 import micropython_backend as backend
 
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "micropython-vscode-extension"
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.5.0"
 MCP_TOOL_SESSION_RELEASE_REASON = "mcp-tool-complete"
 
 
@@ -32,6 +33,7 @@ class MicroPythonMcpServer:
             emit_session_state=lambda _payload: None,
             emit_hybrid_event=lambda _payload: None,
         )
+        self._driver_xAI = DriverXAIAdapter()
 
     def serve(self) -> None:
         try:
@@ -101,12 +103,19 @@ class MicroPythonMcpServer:
             "micropython_device_status": self._tool_device_status,
             "micropython_sync_project": self._tool_sync_project,
             "micropython_run_and_test": self._tool_run_and_test,
+            "micropython_module_catalog": self._tool_module_catalog,
+            "micropython_hardware_list": self._tool_hardware_list,
+            "micropython_hardware_configure": self._tool_hardware_configure,
+            "micropython_hardware_run": self._tool_hardware_run,
         }
         tool = tools.get(name)
         if tool is None:
             raise McpError(-32602, f"Unknown MicroPython tool: {name}")
 
-        payload = tool(arguments)
+        try:
+            payload = tool(arguments)
+        except DriverXAIError as exc:
+            raise McpError(-32602, str(exc)) from exc
         return {
             "content": [
                 {
@@ -277,6 +286,106 @@ class MicroPythonMcpServer:
         finally:
             self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
 
+    def _tool_module_catalog(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_type = self._optional_string(arguments, "moduleType")
+        return self._driver_xAI.catalog(module_type)
+
+    def _tool_hardware_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_id = self._optional_string(arguments, "moduleId")
+        return self._driver_xAI.hardware_catalog(module_id)
+
+    def _tool_hardware_configure(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        action = (self._optional_string(arguments, "action") or "add").lower()
+        if action in {"add", "update"}:
+            return self._driver_xAI.add_hardware(
+                module_id=self._required_string(arguments, "moduleId"),
+                module_type=self._required_string(arguments, "moduleType"),
+                pins=self._object_param(arguments.get("pins")),
+                options=self._object_param(arguments.get("options")),
+                replace=True,
+            )
+        if action == "remove":
+            return self._driver_xAI.remove_hardware(self._required_string(arguments, "moduleId"))
+        if action == "list":
+            return self._driver_xAI.hardware_catalog(self._optional_string(arguments, "moduleId"))
+        raise McpError(-32602, "action must be one of: add, update, remove, list")
+
+    def _tool_hardware_run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        port = self._resolve_port(arguments)
+        try:
+            module_id = self._required_string(arguments, "moduleId")
+            command = self._required_string(arguments, "command")
+            inputs = self._object_param(arguments.get("inputs"))
+            timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+            hardware = self._driver_xAI.get_hardware_instance(module_id)
+            code = self._driver_xAI.generate_run_code(
+                {
+                    "name": "driver_xAI_hardware",
+                    "configPath": str(self._driver_xAI.config_path),
+                },
+                hardware,
+                command,
+                inputs,
+            )
+            steps: list[dict[str, Any]] = []
+            started_at = time.monotonic()
+            temp_path: Path | None = None
+            try:
+                handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py", delete=False)
+                try:
+                    handle.write(code)
+                finally:
+                    handle.close()
+                temp_path = Path(handle.name)
+
+                stdout_lines: list[str] = []
+                stderr_lines: list[str] = []
+                run_result = self._session.run_file(
+                    port=port,
+                    local_file=str(temp_path),
+                    timeout_seconds=timeout,
+                    stdout_line_callback=stdout_lines.append,
+                    stderr_line_callback=stderr_lines.append,
+                )
+                peripheral_result = self._driver_xAI.parse_peripheral_result(str(run_result.get("output", "")))
+                steps.append({
+                    "step": "runHardware",
+                    "ok": bool(run_result.get("ok")),
+                    "result": run_result,
+                    "stdoutLines": stdout_lines,
+                    "stderrLines": stderr_lines,
+                })
+                ok = bool(run_result.get("ok")) and bool(peripheral_result and peripheral_result.get("ok"))
+                return {
+                    "ok": ok,
+                    "port": port,
+                    "configPath": str(self._driver_xAI.config_path),
+                    "moduleId": hardware.get("id"),
+                    "moduleType": hardware.get("type"),
+                    "command": command,
+                    "inputs": inputs,
+                    "durationMs": int((time.monotonic() - started_at) * 1000),
+                    "stdout": run_result.get("output", ""),
+                    "peripheralResult": peripheral_result,
+                    "result": peripheral_result.get("result") if isinstance(peripheral_result, dict) else None,
+                    "error": run_result.get("error") or ((peripheral_result or {}).get("error") if isinstance(peripheral_result, dict) else None),
+                    "steps": steps,
+                    "portReleasedAfterTool": True,
+                    "nextAction": (
+                        "The configured hardware command completed and the serial port was released."
+                        if ok
+                        else "Fix the reported hardware or MicroPython error, then call micropython_hardware_run again."
+                    ),
+                }
+            finally:
+                if temp_path is not None:
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+        finally:
+            self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
+
     def _tools(self) -> list[dict[str, Any]]:
         return [
             {
@@ -322,6 +431,59 @@ class MicroPythonMcpServer:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "micropython_module_catalog",
+                "description": "Lists Driver xAI peripheral module types, setup templates, and command metadata.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "moduleType": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "micropython_hardware_list",
+                "description": "Lists saved connected hardware modules and the Driver xAI commands MCP can run for each one.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "moduleId": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "micropython_hardware_configure",
+                "description": "Adds, updates, removes, or lists saved connected Driver xAI hardware modules for MCP runtime control.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["add", "update", "remove", "list"]},
+                        "moduleId": {"type": "string"},
+                        "moduleType": {"type": "string"},
+                        "pins": {"type": "object"},
+                        "options": {"type": "object"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "micropython_hardware_run",
+                "description": "Runs a Driver xAI command on a saved connected hardware module through the MicroPython extension backend.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "port": {"type": "string"},
+                        "moduleId": {"type": "string"},
+                        "command": {"type": "string"},
+                        "inputs": {"type": "object"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600},
+                    },
+                    "required": ["moduleId", "command"],
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def _resources(self) -> list[dict[str, Any]]:
@@ -336,6 +498,18 @@ class MicroPythonMcpServer:
                 "uri": "micropython://device-status",
                 "name": "MicroPython Device Status",
                 "description": "Currently detected MicroPython serial devices.",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "micropython://module-catalog",
+                "name": "Driver xAI Module Catalog",
+                "description": "Driver xAI peripheral module types, setup templates, and commands.",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "micropython://hardware-profile",
+                "name": "Driver xAI Hardware Profile",
+                "description": "Saved connected Driver xAI hardware modules and their MCP-accessible commands.",
                 "mimeType": "application/json",
             },
         ]
@@ -359,6 +533,10 @@ class MicroPythonMcpServer:
                             "- Do not use `mpremote`, `ampy`, `esptool`, or raw serial directly unless a MicroPython MCP tool reports unsupported.",
                             "- If the port is busy, wait for the active tool/UI operation to finish or close the MicroPython terminal session.",
                             "- If multiple devices are detected, pass the intended serial `port` argument.",
+                            "- Use `micropython_module_catalog` to see available Driver xAI peripheral module types.",
+                            "- Use `micropython_hardware_configure` to save connected hardware modules.",
+                            "- Use `micropython_hardware_list` to see saved hardware and available commands.",
+                            "- Use `micropython_hardware_run` to control saved hardware modules.",
                         ]),
                     }
                 ]
@@ -375,6 +553,28 @@ class MicroPythonMcpServer:
                         "uri": uri,
                         "mimeType": "application/json",
                         "text": json.dumps(payload, indent=2, sort_keys=True),
+                    }
+                ]
+            }
+
+        if uri == "micropython://module-catalog":
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": json.dumps(self._driver_xAI.catalog(), indent=2, sort_keys=True),
+                    }
+                ]
+            }
+
+        if uri == "micropython://hardware-profile":
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": json.dumps(self._driver_xAI.hardware_catalog(), indent=2, sort_keys=True),
                     }
                 ]
             }
@@ -440,6 +640,12 @@ class MicroPythonMcpServer:
         if trim:
             text = text.strip()
         return text if text else None
+
+    def _required_string(self, arguments: dict[str, Any], key: str) -> str:
+        value = self._optional_string(arguments, key)
+        if not value:
+            raise McpError(-32602, f"{key} is required.")
+        return value
 
     def _object_param(self, value: Any) -> dict[str, Any]:
         if value is None:

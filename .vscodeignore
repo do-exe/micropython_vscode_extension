@@ -10,9 +10,12 @@ runtime/.tmp/**
 backend/**
 !backend/micropython_backend.py
 !backend/mcp_server.py
+!backend/driver_xAI_adapter.py
+!backend/driver_xAI_cli.py
 !backend/sync_core.py
 !backend/sync_scripts.py
 !firmware/**
+!driver_xAI/**
 !runtime/**
 !media/**
 !package.json

@@ -5,6 +5,8 @@
 - Added bundled Windows x64 runtime support so the extension can run on Windows without depending on user-installed Python packages.
 - Added platform-aware runtime staging and backend launch support for Linux x64, Linux arm64, Windows x64, and Windows arm64.
 - Added Codex MCP config auto-registration on extension activation, plus direct Codex `config.toml` refresh support.
+- Added Driver xAI module catalog support through the bundled MCP server.
+- Added CLI and MCP hardware-profile support for saving connected Driver xAI modules and running their commands.
 - Added Windows runtime build handoff notes for repeatable packaging.
 - Trimmed bundled Linux runtime files that are not needed at extension runtime.
 
