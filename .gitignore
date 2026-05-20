@@ -1,11 +1,14 @@
 .vscode/
 node_modules/
 out/
+.pytest_cache/
 .venv-runtime/
 .venv/
 *.vsix
 .vscode-test/
 __pycache__/
+**/__pycache__/
 *.py[cod]
-runtime/
+/runtime/.tmp/
+/runtime/
 FUTURE_CROSS_PLATFORM_PLAN.md

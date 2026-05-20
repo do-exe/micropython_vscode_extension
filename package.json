@@ -7,10 +7,8 @@
   "author": "do-exe",
   "license": "MIT",
   "icon": "media/micropython-marketplace-icon.png",
-  "homepage": "update soon",
   "bugs": {
-    "url": "update soon",
-    "email": "update soon"
+    "email": "maildoexe@gmail.com"
   },
   "galleryBanner": {
     "color": "#050505",
@@ -23,7 +21,6 @@
     "Other"
   ],
   "keywords": [
-    "micropython",
     "micropython",
     "serial",
     "repl",
@@ -39,13 +36,9 @@
   "main": "out/extension.js",
   "files": [
     "out/**",
-    "backend/micropython_backend.py",
-    "backend/mcp_server.py",
-    "backend/driver_xAI_adapter.py",
-    "backend/driver_xAI_cli.py",
-    "backend/sync_core.py",
-    "backend/sync_scripts.py",
-    "driver_xAI/**",
+    "src/backend/host/python_service/**",
+    "src/backend/device/**",
+    "vendor/driver_xAI/**",
     "runtime/**",
     "media/**",
     "package.json",
@@ -428,6 +421,97 @@
           },
           "additionalProperties": false
         }
+      },
+      {
+        "name": "micropython_filesystem",
+        "toolReferenceName": "micropythonFilesystem",
+        "displayName": "MicroPython Filesystem",
+        "modelDescription": "Use this for MicroPython device filesystem operations: list, read, write, mkdir, rename, delete, and stat. Prefer this over generating ad hoc os/uos filesystem code.",
+        "userDescription": "Manage files and folders on a MicroPython device.",
+        "tags": [
+          "micropython",
+          "filesystem",
+          "files"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "string",
+              "description": "Optional serial port. If omitted, the selected device or the only detected device is used."
+            },
+            "operation": {
+              "type": "string",
+              "enum": [
+                "list",
+                "read",
+                "write",
+                "mkdir",
+                "rename",
+                "delete",
+                "stat"
+              ],
+              "description": "Filesystem operation to perform."
+            },
+            "path": {
+              "type": "string",
+              "description": "Device path for the operation. Defaults to / for list."
+            },
+            "newPath": {
+              "type": "string",
+              "description": "Destination device path for rename."
+            },
+            "content": {
+              "type": "string",
+              "description": "UTF-8 file content for write."
+            },
+            "contentBase64": {
+              "type": "string",
+              "description": "Base64 file content for write. Takes precedence over content."
+            },
+            "recursive": {
+              "type": "boolean",
+              "description": "When deleting, remove directories recursively. Default true."
+            },
+            "overwrite": {
+              "type": "boolean",
+              "description": "When writing, default true. When renaming, default false."
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "micropython_soft_reset",
+        "toolReferenceName": "micropythonSoftReset",
+        "displayName": "MicroPython Soft Reset",
+        "modelDescription": "Soft resets the selected MicroPython device through the extension backend. Use after stuck loops, dirty REPL state, or before a clean verification run.",
+        "userDescription": "Soft reset a MicroPython device.",
+        "tags": [
+          "micropython",
+          "device",
+          "reset"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "string",
+              "description": "Optional serial port. If omitted, the selected device or the only detected device is used."
+            },
+            "timeoutSeconds": {
+              "type": "number",
+              "description": "Timeout in seconds while waiting for reset output/prompt.",
+              "minimum": 0,
+              "maximum": 600,
+              "default": 30
+            }
+          },
+          "additionalProperties": false
+        }
       }
     ],
     "mcpServerDefinitionProviders": [
@@ -557,6 +641,9 @@
     "stage-runtime": "node scripts/run_stage_runtime.js",
     "build": "npm run stage-runtime && npm run compile",
     "compile": "tsc -p ./",
+    "check": "npm run compile -- --pretty false && npm run test:python && npm run py:compile",
+    "test:python": "python3 -m pytest tests/python -q",
+    "py:compile": "python3 -m compileall -q src/backend/host/python_service src/backend/device",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run build",
     "package:vsix": "npm run build && npx @vscode/vsce package --allow-missing-repository --no-rewrite-relative-links --no-dependencies --no-yarn"

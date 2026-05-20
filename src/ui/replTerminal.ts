@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
-import type { SessionState } from "../core/shared";
-import { BackendServiceClient } from "../backend/backendServiceClient";
+import type { SessionState } from "../core/types";
+import { BackendServiceClient } from "../backend/host/extension/backendServiceClient";
 
 export class MicroPythonReplPseudoterminal implements vscode.Pseudoterminal, vscode.Disposable {
   private readonly writeEmitter = new vscode.EventEmitter<string>();

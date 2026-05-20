@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-import { type WorkspaceTreeEntry } from "../core/shared";
+import { type WorkspaceTreeEntry } from "../core/types";
 import { createMicroPythonWorkspaceUri } from "./workspaceFileSystemProvider";
 
 type WorkspaceNodeKind = "folder" | "file";

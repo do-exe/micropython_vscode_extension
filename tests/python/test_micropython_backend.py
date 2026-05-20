@@ -8,18 +8,17 @@ import time
 import unittest
 
 
-BACKEND_DIR = pathlib.Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[2] / "src" / "backend"
+PYTHON_SERVICE_PARENT = BACKEND_ROOT / "host"
+for path in (str(PYTHON_SERVICE_PARENT), str(BACKEND_ROOT)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
-import micropython_backend as backend
-
-
-def _frame(line: str) -> str:
-    return f"{backend.HELPER_FRAME_PREFIX}{line}{backend.HELPER_FRAME_SUFFIX}"
+import python_service as backend
 
 
-class HelperSuppressionTests(unittest.TestCase):
+
+class ReplParsingTests(unittest.TestCase):
     def test_detects_custom_friendly_prompt_suffix(self) -> None:
         self.assertTrue(backend._has_friendly_prompt(b"Device >>> "))
 
@@ -40,85 +39,6 @@ class HelperSuppressionTests(unittest.TestCase):
             backend._normalize_friendly_paste_source(b"print(1)\r\n"),
             b"print(1)\n",
         )
-
-    def test_detects_truncated_state_fragment(self) -> None:
-        self.assertTrue(backend._looks_like_helper_terminal_fragment('STATE:{"frame_id":7,"fb":"AAAA"'))
-
-    def test_detects_truncated_helper_echo_fragment(self) -> None:
-        fragment = '"_hyb_poll_state" in globals() else print("HYBRID_SYNC_ERR:HELPER_MISSING")'
-        self.assertTrue(backend._looks_like_helper_terminal_fragment(fragment))
-
-    def test_unwraps_framed_helper_line(self) -> None:
-        self.assertEqual(backend._clean_helper_line(_frame("HYBRID_READY")), "HYBRID_READY")
-
-    def test_parse_helper_output_reads_framed_state(self) -> None:
-        parsed = backend._parse_helper_output(_frame('STATE:{"frame_id":7,"changed":false}') + "\n")
-        self.assertEqual(parsed["lines"], ['STATE:{"frame_id":7,"changed":false}'])
-        self.assertEqual(parsed["states"], [{"frame_id": 7, "changed": False}])
-
-    def test_split_helper_framed_text_buffers_partial_prefix(self) -> None:
-        visible, frames, remainder = backend._split_helper_framed_text("visible\n{{MICROPYTHON_HY")
-        self.assertEqual(visible, "visible\n")
-        self.assertEqual(frames, [])
-        self.assertEqual(remainder, "{{MICROPYTHON_HY")
-
-    def test_suppressed_helper_fragment_does_not_pollute_terminal(self) -> None:
-        emitted: list[str] = []
-        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
-
-        with session._helper_condition:
-            session._suppress_terminal_helper_output = True
-            session._suppress_terminal_helper_depth = 1
-            session._suppress_terminal_helper_output_deadline = time.monotonic() + 1.0
-            session._suppress_terminal_helper_activity_seen = False
-
-        session._process_terminal_text(_frame('STATE:{"frame_id":1'))
-        session._process_terminal_text('\n>>> ')
-
-        self.assertEqual(emitted, [])
-
-    def test_unsuppressed_partial_helper_frame_does_not_pollute_terminal(self) -> None:
-        emitted: list[str] = []
-        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
-
-        session._process_terminal_text("visible\n{{MICROPYTHON_HY")
-        session._process_terminal_text('B:STATE:{"frame_id":1,"changed":false}}\n')
-
-        self.assertEqual(emitted, ["visible\n"])
-
-    def test_unsuppressed_helper_lines_are_filtered_from_terminal(self) -> None:
-        emitted: list[str] = []
-        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
-
-        session._process_terminal_text(
-            "visible\n"
-            '_hyb_poll_state(7) if "_hyb_poll_state" in globals() else print("HYBRID_SYNC_ERR:HELPER_MISSING")\n'
-            "HYBRID_MODE:ON\n"
-        )
-
-        self.assertEqual(emitted, ["visible\n"])
-
-    def test_overlapping_helper_prompts_and_next_command_stay_suppressed(self) -> None:
-        emitted: list[str] = []
-        session = backend.PersistentSession(emitted.append, lambda _payload: None, lambda _payload: None)
-
-        with session._helper_condition:
-            session._suppress_terminal_helper_output = True
-            session._suppress_terminal_helper_depth = 2
-            session._suppress_terminal_helper_output_deadline = time.monotonic() + 1.0
-            session._suppress_terminal_helper_activity_seen = True
-
-        session._process_terminal_text(
-            '>>> \n'
-            '_hyb_poll_state(11427) if "_hyb_poll_state" in globals() else print("HYBRID_SYNC_ERR:HELPER_MISSING")\n'
-            + _frame('STATE:{"frame_id":11427,"changed":false}')
-            + '\n'
-            '>>> '
-        )
-
-        self.assertEqual(emitted, [])
-        self.assertFalse(session._suppress_terminal_helper_output)
-        self.assertEqual(session._suppress_terminal_helper_depth, 0)
 
     def test_enter_raw_repl_accepts_banner_and_prompt_in_same_read(self) -> None:
         class Dummy:
@@ -821,7 +741,7 @@ class SyncFolderTests(unittest.TestCase):
                     pass
 
             progress_lines: list[str] = []
-            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None)
             controller = FakeController()
             session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
             session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -871,7 +791,7 @@ class SyncFolderTests(unittest.TestCase):
                     pass
 
             progress_lines: list[str] = []
-            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None)
             controller = FakeController()
             session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
             session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -931,7 +851,7 @@ class SyncFolderTests(unittest.TestCase):
                     pass
 
             progress_lines: list[str] = []
-            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None)
             controller = FakeController()
             session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
             session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -985,7 +905,7 @@ class SyncFolderTests(unittest.TestCase):
                 def sync_exit_raw_repl(self) -> None:
                     pass
 
-            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None)
             controller = FakeController()
             session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
             session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1034,7 +954,7 @@ class SyncFolderTests(unittest.TestCase):
                     pass
 
             progress_lines: list[str] = []
-            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None)
             controller = FakeController()
             session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
             session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1094,7 +1014,7 @@ class SyncFolderTests(unittest.TestCase):
                         raise backend.ControllerError("serial write stalled")
 
             progress_lines: list[str] = []
-            session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+            session = backend.PersistentSession(lambda _text: None, lambda _state: None)
             controller = FakeController()
             session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
             session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1141,7 +1061,7 @@ class SyncFolderTests(unittest.TestCase):
                 self._in_raw_repl = False
 
         progress_lines: list[str] = []
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None)
         controller = FakeController()
         session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
         session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1353,7 +1273,7 @@ class WorkspaceOperationTests(unittest.TestCase):
                     "usedBytes": 245760,
                 }
 
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None)
         controller = FakeController()
         session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
         session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1384,7 +1304,7 @@ class WorkspaceOperationTests(unittest.TestCase):
                 self.read_call = (remote_path, timeout)
                 return b"hello"
 
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None)
         controller = FakeController()
         session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
         session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1414,7 +1334,7 @@ class WorkspaceOperationTests(unittest.TestCase):
             def sync_put_content(self, remote_path: str, data: bytes, timeout: float | None = None) -> None:
                 self.put_calls.append((remote_path, data))
 
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None)
         controller = FakeController()
         session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
         session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1452,7 +1372,7 @@ class WorkspaceOperationTests(unittest.TestCase):
             def sync_rename_path(self, old_path: str, new_path: str, timeout: float = 0.0) -> None:
                 raise AssertionError("rename should not run when overwrite is false")
 
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None)
         controller = FakeController()
         session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
         session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1480,7 +1400,7 @@ class WorkspaceOperationTests(unittest.TestCase):
                 self.delete_call = (remote_path, recursive, timeout)
                 return "directory"
 
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
+        session = backend.PersistentSession(lambda _text: None, lambda _state: None)
         controller = FakeController()
         session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
         session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
@@ -1491,200 +1411,6 @@ class WorkspaceOperationTests(unittest.TestCase):
         self.assertEqual(result["kind"], "directory")
         self.assertEqual(controller.delete_call[0], "/apps")
         self.assertTrue(controller.delete_call[1])
-
-
-class FirmwareBootloaderTests(unittest.TestCase):
-    def test_request_bootloader_sends_machine_bootloader_command(self) -> None:
-        class Dummy:
-            def __init__(self) -> None:
-                self._in_raw_repl = False
-                self.enter_calls = 0
-                self.exec_calls: list[str] = []
-
-            def _drain_serial_input(self) -> None:
-                pass
-
-            def _enter_raw_repl(self, timeout_overall: float = 0.0) -> None:
-                self.enter_calls += 1
-                self._in_raw_repl = True
-
-            def _exec_raw_no_follow(self, code: str) -> None:
-                self.exec_calls.append(code)
-
-        dummy = Dummy()
-        backend.MicroPythonController.request_bootloader(dummy)
-
-        self.assertEqual(dummy.enter_calls, 1)
-        self.assertEqual(dummy.exec_calls, ["import machine\r\nmachine.bootloader()\r\n"])
-        self.assertFalse(dummy._in_raw_repl)
-
-    def test_persistent_session_request_bootloader_uses_active_session(self) -> None:
-        class FakeController:
-            def __init__(self) -> None:
-                self.port = "COM_TEST"
-                self.calls = 0
-
-            def request_bootloader(self) -> None:
-                self.calls += 1
-
-        progress_lines: list[str] = []
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
-        controller = FakeController()
-        session._controller = controller  # type: ignore[assignment]
-        session._port = "COM_TEST"
-        session._begin_exclusive_operation = lambda: (controller, False)  # type: ignore[method-assign]
-        session._end_exclusive_operation = lambda _paused: None  # type: ignore[method-assign]
-
-        result = session.request_bootloader(port="COM_TEST", progress_callback=progress_lines.append)
-
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["prepared"])
-        self.assertEqual(result["port"], "COM_TEST")
-        self.assertEqual(controller.calls, 1)
-        self.assertEqual(progress_lines, ["Requesting bootloader mode via active MicroPython session on COM_TEST..."])
-
-    def test_persistent_session_request_bootloader_skips_mismatched_port(self) -> None:
-        class FakeController:
-            def __init__(self) -> None:
-                self.port = "COM_OPEN"
-                self.calls = 0
-
-            def request_bootloader(self) -> None:
-                self.calls += 1
-
-        session = backend.PersistentSession(lambda _text: None, lambda _state: None, lambda _event: None)
-        controller = FakeController()
-        session._controller = controller  # type: ignore[assignment]
-        session._port = "COM_OPEN"
-
-        result = session.request_bootloader(port="COM_OTHER")
-
-        self.assertFalse(result["ok"])
-        self.assertFalse(result["prepared"])
-        self.assertTrue(result["skipped"])
-        self.assertEqual(result["sessionPort"], "COM_OPEN")
-        self.assertEqual(controller.calls, 0)
-
-    def test_wait_for_bootloader_ready_accepts_same_port_without_reset_signal(self) -> None:
-        original_scan = backend._scan_esp_ports
-        original_build = backend._build_esptool_boot_cmd
-        original_run = backend._run_esptool
-        original_wait = backend._wait_for_esp_port
-
-        seen_cmds: list[list[str]] = []
-
-        def fake_build(
-            port: str,
-            baudrate: int = backend.FIRMWARE_FLASH_BAUDRATE,
-            before: str = "no-reset",
-            after: str = "no-reset",
-            chip: str = backend.FIRMWARE_FLASH_CHIP,
-            connect_attempts: int = backend.FIRMWARE_FLASH_CONNECT_ATTEMPTS,
-        ) -> list[str]:
-            return [port, str(baudrate), before, after, chip, str(connect_attempts)]
-
-        try:
-            backend._scan_esp_ports = lambda: ["COM_TEST"]  # type: ignore[assignment]
-            backend._build_esptool_boot_cmd = fake_build  # type: ignore[assignment]
-            backend._run_esptool = lambda cmd, progress_callback=None: seen_cmds.append(cmd)  # type: ignore[assignment]
-            backend._wait_for_esp_port = lambda preferred, progress_callback=None: preferred  # type: ignore[assignment]
-
-            confirmed_port = backend._wait_for_bootloader_ready(
-                "COM_TEST",
-                timeout_seconds=0.2,
-                require_port_reset=False,
-            )
-        finally:
-            backend._scan_esp_ports = original_scan  # type: ignore[assignment]
-            backend._build_esptool_boot_cmd = original_build  # type: ignore[assignment]
-            backend._run_esptool = original_run  # type: ignore[assignment]
-            backend._wait_for_esp_port = original_wait  # type: ignore[assignment]
-
-        self.assertEqual(confirmed_port, "COM_TEST")
-        self.assertEqual(len(seen_cmds), 1)
-        self.assertEqual(seen_cmds[0][0], "COM_TEST")
-        self.assertEqual(seen_cmds[0][2:4], ["no-reset", "no-reset"])
-
-    def test_flash_firmware_bundle_uses_no_reset_when_bootloader_ready(self) -> None:
-        original_detect = backend._detect_initial_flash_port
-        original_run = backend._run_esptool_with_connect_retries
-
-        observed: dict[str, object] = {}
-
-        def fake_run(
-            image_pairs: list[tuple[str, pathlib.Path]],
-            port: str,
-            progress_callback=None,
-            before_modes: tuple[str, ...] | None = None,
-            after_mode: str = backend.FIRMWARE_FLASH_AFTER,
-        ) -> str:
-            observed["port"] = port
-            observed["before_modes"] = before_modes
-            observed["image_pairs"] = image_pairs
-            observed["after_mode"] = after_mode
-            return port
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            bootloader = root / "bootloader.bin"
-            partition = root / "partition-table.bin"
-            ota = root / "ota.bin"
-            calos = root / "micropython.bin"
-            for path in (bootloader, partition, ota, calos):
-                path.write_bytes(b"ok")
-
-            try:
-                backend._detect_initial_flash_port = lambda preferred, progress_callback=None: "COM_TEST"  # type: ignore[assignment]
-                backend._run_esptool_with_connect_retries = fake_run  # type: ignore[assignment]
-
-                result = backend.flash_firmware_bundle(
-                    port="COM_TEST",
-                    bootloader_path=str(bootloader),
-                    calos_path=str(calos),
-                    partition_table_path=str(partition),
-                    ota_data_path=str(ota),
-                    bootloader_ready=True,
-                )
-            finally:
-                backend._detect_initial_flash_port = original_detect  # type: ignore[assignment]
-                backend._run_esptool_with_connect_retries = original_run  # type: ignore[assignment]
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(observed["port"], "COM_TEST")
-        self.assertEqual(observed["before_modes"], ("no-reset",))
-
-    def test_erase_chip_uses_no_reset_when_bootloader_ready(self) -> None:
-        original_detect = backend._detect_initial_flash_port
-        original_run = backend._run_esptool_erase_with_connect_retries
-
-        observed: dict[str, object] = {}
-
-        def fake_run(
-            port: str,
-            progress_callback=None,
-            before_modes: tuple[str, ...] | None = None,
-            after_mode: str = backend.FIRMWARE_FLASH_AFTER,
-        ) -> str:
-            observed["port"] = port
-            observed["before_modes"] = before_modes
-            observed["after_mode"] = after_mode
-            return port
-
-        try:
-            backend._detect_initial_flash_port = lambda preferred, progress_callback=None: "COM_TEST"  # type: ignore[assignment]
-            backend._run_esptool_erase_with_connect_retries = fake_run  # type: ignore[assignment]
-
-            result = backend.erase_chip(
-                port="COM_TEST",
-                bootloader_ready=True,
-            )
-        finally:
-            backend._detect_initial_flash_port = original_detect  # type: ignore[assignment]
-            backend._run_esptool_erase_with_connect_retries = original_run  # type: ignore[assignment]
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(observed["port"], "COM_TEST")
-        self.assertEqual(observed["before_modes"], ("no-reset",))
 
 
 if __name__ == "__main__":

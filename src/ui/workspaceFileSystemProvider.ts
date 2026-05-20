@@ -6,7 +6,7 @@ import {
   type WorkspaceEntryKind,
   type WorkspaceErrorCode,
   type WorkspaceStat,
-} from "../core/shared";
+} from "../core/types";
 
 const MICROPYTHON_WORKSPACE_SCHEME = "micropython";
 

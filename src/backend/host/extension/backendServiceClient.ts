@@ -4,8 +4,8 @@ import { ChildProcessWithoutNullStreams, spawn } from "child_process";
 import * as readline from "readline";
 import * as vscode from "vscode";
 
+import { BACKEND_TIMEOUT_BUFFER_SEC } from "../../../core/constants";
 import {
-  BACKEND_TIMEOUT_BUFFER_SEC,
   type BackendMessage,
   type ClearAllFilesResult,
   type PendingBackendRequest,
@@ -30,10 +30,17 @@ import {
   type WorkspaceSyncResult,
   type WorkspaceTreeResult,
   type WorkspaceWriteFileResult,
-} from "../core/shared";
+} from "../../../core/types";
+import {
+  BACKEND_ROOT_RELATIVE_DIR,
+  BACKEND_SERVICE_MODULE,
+  PYTHON_SERVICE_PARENT_RELATIVE_DIR,
+  resolveExtensionBackendPath,
+  withBackendPythonPath,
+} from "./paths";
 
 export class BackendServiceClient implements vscode.Disposable {
-  private readonly backendScriptPath: string;
+  private readonly backendPythonPaths: string[];
   private readonly runtimeRootPath: string;
 
   private readonly terminalOutputEmitter = new vscode.EventEmitter<string>();
@@ -52,8 +59,11 @@ export class BackendServiceClient implements vscode.Disposable {
   public readonly onTerminalOutput = this.terminalOutputEmitter.event;
   public readonly onSessionState = this.sessionStateEmitter.event;
 
-  constructor(private readonly context: vscode.ExtensionContext) {
-    this.backendScriptPath = path.join(context.extensionPath, "backend", "micropython_backend.py");
+  constructor(context: vscode.ExtensionContext) {
+    this.backendPythonPaths = [
+      resolveExtensionBackendPath(context.extensionPath, PYTHON_SERVICE_PARENT_RELATIVE_DIR),
+      resolveExtensionBackendPath(context.extensionPath, BACKEND_ROOT_RELATIVE_DIR),
+    ];
     this.runtimeRootPath = path.join(context.extensionPath, "runtime");
   }
 
@@ -394,10 +404,10 @@ export class BackendServiceClient implements vscode.Disposable {
       return this.serviceStartPromise;
     }
     const python = this.requireBundledPython();
-    const runtimeEnv = this.requireBundledPythonEnv();
+    const runtimeEnv = withBackendPythonPath(this.requireBundledPythonEnv(), this.backendPythonPaths);
 
     this.serviceStartPromise = new Promise<void>((resolve, reject) => {
-      const child = spawn(python, [this.backendScriptPath, "serve"], { shell: false, env: runtimeEnv });
+      const child = spawn(python, ["-m", BACKEND_SERVICE_MODULE, "serve"], { shell: false, env: runtimeEnv });
       let ready = false;
 
       this.serviceProcess = child;

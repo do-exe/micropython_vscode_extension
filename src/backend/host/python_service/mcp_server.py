@@ -6,15 +6,16 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+import base64
 from typing import Any, Callable
 
-from driver_xAI_adapter import DriverXAIAdapter, DriverXAIError
-import micropython_backend as backend
+from . import PersistentSession, list_detected_esp_ports
+from .driver_xai.mcp_tools import DriverXaiMcpTools
 
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "micropython-vscode-extension"
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "0.4.0"
 MCP_TOOL_SESSION_RELEASE_REASON = "mcp-tool-complete"
 
 
@@ -28,12 +29,11 @@ class McpError(Exception):
 class MicroPythonMcpServer:
     def __init__(self) -> None:
         self._stdio_mode: str | None = None
-        self._session = backend.PersistentSession(
+        self._session = PersistentSession(
             emit_terminal_text=lambda _text: None,
             emit_session_state=lambda _payload: None,
-            emit_hybrid_event=lambda _payload: None,
         )
-        self._driver_xAI = DriverXAIAdapter()
+        self._driver_xai_tools = DriverXaiMcpTools()
 
     def serve(self) -> None:
         try:
@@ -103,19 +103,34 @@ class MicroPythonMcpServer:
             "micropython_device_status": self._tool_device_status,
             "micropython_sync_project": self._tool_sync_project,
             "micropython_run_and_test": self._tool_run_and_test,
-            "micropython_module_catalog": self._tool_module_catalog,
-            "micropython_hardware_list": self._tool_hardware_list,
-            "micropython_hardware_configure": self._tool_hardware_configure,
-            "micropython_hardware_run": self._tool_hardware_run,
+            "micropython_filesystem": self._tool_filesystem,
+            "micropython_soft_reset": self._tool_soft_reset,
         }
         tool = tools.get(name)
+        if tool is None and self._driver_xai_tools.has_tool(name):
+            try:
+                payload = self._driver_xai_tools.call_tool(
+                    name,
+                    arguments,
+                    session=self._session,
+                    resolve_port=self._resolve_port,
+                )
+            finally:
+                if self._driver_xai_tools.needs_device_session(name):
+                    self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(payload, indent=2, sort_keys=True),
+                    }
+                ],
+                "isError": not bool(payload.get("ok", False)) if isinstance(payload, dict) else False,
+            }
         if tool is None:
             raise McpError(-32602, f"Unknown MicroPython tool: {name}")
 
-        try:
-            payload = tool(arguments)
-        except DriverXAIError as exc:
-            raise McpError(-32602, str(exc)) from exc
+        payload = tool(arguments)
         return {
             "content": [
                 {
@@ -128,7 +143,7 @@ class MicroPythonMcpServer:
 
     def _tool_device_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
         selected_port = self._optional_string(arguments, "port")
-        devices = backend.list_detected_esp_ports()
+        devices = list_detected_esp_ports()
         selected_device = next((device for device in devices if device.get("port") == selected_port), None) if selected_port else None
         return {
             "ok": True,
@@ -286,103 +301,89 @@ class MicroPythonMcpServer:
         finally:
             self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
 
-    def _tool_module_catalog(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        module_type = self._optional_string(arguments, "moduleType")
-        return self._driver_xAI.catalog(module_type)
-
-    def _tool_hardware_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        module_id = self._optional_string(arguments, "moduleId")
-        return self._driver_xAI.hardware_catalog(module_id)
-
-    def _tool_hardware_configure(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        action = (self._optional_string(arguments, "action") or "add").lower()
-        if action in {"add", "update"}:
-            return self._driver_xAI.add_hardware(
-                module_id=self._required_string(arguments, "moduleId"),
-                module_type=self._required_string(arguments, "moduleType"),
-                pins=self._object_param(arguments.get("pins")),
-                options=self._object_param(arguments.get("options")),
-                replace=True,
-            )
-        if action == "remove":
-            return self._driver_xAI.remove_hardware(self._required_string(arguments, "moduleId"))
-        if action == "list":
-            return self._driver_xAI.hardware_catalog(self._optional_string(arguments, "moduleId"))
-        raise McpError(-32602, "action must be one of: add, update, remove, list")
-
-    def _tool_hardware_run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _tool_filesystem(self, arguments: dict[str, Any]) -> dict[str, Any]:
         port = self._resolve_port(arguments)
-        try:
-            module_id = self._required_string(arguments, "moduleId")
-            command = self._required_string(arguments, "command")
-            inputs = self._object_param(arguments.get("inputs"))
-            timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
-            hardware = self._driver_xAI.get_hardware_instance(module_id)
-            code = self._driver_xAI.generate_run_code(
-                {
-                    "name": "driver_xAI_hardware",
-                    "configPath": str(self._driver_xAI.config_path),
-                },
-                hardware,
-                command,
-                inputs,
-            )
-            steps: list[dict[str, Any]] = []
-            started_at = time.monotonic()
-            temp_path: Path | None = None
-            try:
-                handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py", delete=False)
-                try:
-                    handle.write(code)
-                finally:
-                    handle.close()
-                temp_path = Path(handle.name)
+        operation = self._required_string(arguments, "operation")
+        remote_path = self._normalize_remote_root(self._optional_string(arguments, "path") or "/")
 
-                stdout_lines: list[str] = []
-                stderr_lines: list[str] = []
-                run_result = self._session.run_file(
-                    port=port,
-                    local_file=str(temp_path),
-                    timeout_seconds=timeout,
-                    stdout_line_callback=stdout_lines.append,
-                    stderr_line_callback=stderr_lines.append,
-                )
-                peripheral_result = self._driver_xAI.parse_peripheral_result(str(run_result.get("output", "")))
-                steps.append({
-                    "step": "runHardware",
-                    "ok": bool(run_result.get("ok")),
-                    "result": run_result,
-                    "stdoutLines": stdout_lines,
-                    "stderrLines": stderr_lines,
-                })
-                ok = bool(run_result.get("ok")) and bool(peripheral_result and peripheral_result.get("ok"))
-                return {
-                    "ok": ok,
-                    "port": port,
-                    "configPath": str(self._driver_xAI.config_path),
-                    "moduleId": hardware.get("id"),
-                    "moduleType": hardware.get("type"),
-                    "command": command,
-                    "inputs": inputs,
-                    "durationMs": int((time.monotonic() - started_at) * 1000),
-                    "stdout": run_result.get("output", ""),
-                    "peripheralResult": peripheral_result,
-                    "result": peripheral_result.get("result") if isinstance(peripheral_result, dict) else None,
-                    "error": run_result.get("error") or ((peripheral_result or {}).get("error") if isinstance(peripheral_result, dict) else None),
-                    "steps": steps,
-                    "portReleasedAfterTool": True,
-                    "nextAction": (
-                        "The configured hardware command completed and the serial port was released."
-                        if ok
-                        else "Fix the reported hardware or MicroPython error, then call micropython_hardware_run again."
-                    ),
-                }
-            finally:
-                if temp_path is not None:
+        try:
+            if operation == "list":
+                result = self._session.workspace_list_directory(port=port, remote_path=remote_path)
+            elif operation == "read":
+                result = self._session.workspace_read_file(port=port, remote_path=remote_path)
+                content_base64 = result.get("contentBase64")
+                if isinstance(content_base64, str):
                     try:
-                        temp_path.unlink()
-                    except OSError:
+                        result = {
+                            **result,
+                            "content": base64.b64decode(content_base64.encode("ascii")).decode("utf-8", errors="replace"),
+                        }
+                    except Exception:
                         pass
+            elif operation == "write":
+                content_base64 = self._optional_string(arguments, "contentBase64", trim=False)
+                if content_base64 is None:
+                    content = self._optional_string(arguments, "content", trim=False) or ""
+                    content_base64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+                result = self._session.workspace_write_file(
+                    port=port,
+                    remote_path=remote_path,
+                    content_base64=content_base64,
+                    create=True,
+                    overwrite=bool(arguments.get("overwrite", True)),
+                )
+            elif operation == "mkdir":
+                result = self._session.workspace_create_directory(port=port, remote_path=remote_path)
+            elif operation == "rename":
+                new_path = self._normalize_remote_root(self._required_string(arguments, "newPath"))
+                result = self._session.workspace_rename(
+                    port=port,
+                    old_path=remote_path,
+                    new_path=new_path,
+                    overwrite=bool(arguments.get("overwrite", False)),
+                )
+            elif operation == "delete":
+                result = self._session.workspace_delete(
+                    port=port,
+                    remote_path=remote_path,
+                    recursive=bool(arguments.get("recursive", True)),
+                )
+            elif operation == "stat":
+                result = self._session.workspace_stat(port=port, remote_path=remote_path)
+            else:
+                raise McpError(-32602, f"Unsupported MicroPython filesystem operation: {operation}")
+
+            return {
+                "ok": bool(result.get("ok")),
+                "port": port,
+                "operation": operation,
+                "path": remote_path,
+                "result": result,
+                "portReleasedAfterTool": True,
+                "guidance": (
+                    "Filesystem operation used the MicroPython extension backend and released the serial port after the tool call. "
+                    "Do not retry with mpremote, ampy, esptool, or raw serial unless this result says unsupported."
+                ),
+            }
+        finally:
+            self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
+
+    def _tool_soft_reset(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        port = self._resolve_port(arguments)
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 30.0
+
+        try:
+            result = self._session.soft_reset(port=port, timeout_seconds=timeout)
+            return {
+                "ok": bool(result.get("ok")),
+                "port": port,
+                "timeoutSeconds": timeout,
+                "result": result,
+                "portReleasedAfterTool": True,
+                "guidance": "Soft reset used the MicroPython extension backend. Inspect output/promptSeen if the device still appears stuck.",
+            }
         finally:
             self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
 
@@ -432,58 +433,40 @@ class MicroPythonMcpServer:
                 },
             },
             {
-                "name": "micropython_module_catalog",
-                "description": "Lists Driver xAI peripheral module types, setup templates, and command metadata.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "moduleType": {"type": "string"},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "name": "micropython_hardware_list",
-                "description": "Lists saved connected hardware modules and the Driver xAI commands MCP can run for each one.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "moduleId": {"type": "string"},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "name": "micropython_hardware_configure",
-                "description": "Adds, updates, removes, or lists saved connected Driver xAI hardware modules for MCP runtime control.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["add", "update", "remove", "list"]},
-                        "moduleId": {"type": "string"},
-                        "moduleType": {"type": "string"},
-                        "pins": {"type": "object"},
-                        "options": {"type": "object"},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "name": "micropython_hardware_run",
-                "description": "Runs a Driver xAI command on a saved connected hardware module through the MicroPython extension backend.",
+                "name": "micropython_filesystem",
+                "description": "Use this for MicroPython device filesystem operations: list, read, write, mkdir, rename, delete, and stat. Prefer this over generating ad hoc os/uos filesystem code.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "port": {"type": "string"},
-                        "moduleId": {"type": "string"},
-                        "command": {"type": "string"},
-                        "inputs": {"type": "object"},
-                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600},
+                        "operation": {
+                            "type": "string",
+                            "enum": ["list", "read", "write", "mkdir", "rename", "delete", "stat"],
+                        },
+                        "path": {"type": "string"},
+                        "newPath": {"type": "string"},
+                        "content": {"type": "string"},
+                        "contentBase64": {"type": "string"},
+                        "recursive": {"type": "boolean"},
+                        "overwrite": {"type": "boolean"},
                     },
-                    "required": ["moduleId", "command"],
+                    "required": ["operation"],
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "micropython_soft_reset",
+                "description": "Soft resets the selected MicroPython device through the extension backend. Use after stuck loops, dirty REPL state, or before a clean verification run.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "port": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 30},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            *self._driver_xai_tools.tool_definitions(),
         ]
 
     def _resources(self) -> list[dict[str, Any]]:
@@ -498,18 +481,6 @@ class MicroPythonMcpServer:
                 "uri": "micropython://device-status",
                 "name": "MicroPython Device Status",
                 "description": "Currently detected MicroPython serial devices.",
-                "mimeType": "application/json",
-            },
-            {
-                "uri": "micropython://module-catalog",
-                "name": "Driver xAI Module Catalog",
-                "description": "Driver xAI peripheral module types, setup templates, and commands.",
-                "mimeType": "application/json",
-            },
-            {
-                "uri": "micropython://hardware-profile",
-                "name": "Driver xAI Hardware Profile",
-                "description": "Saved connected Driver xAI hardware modules and their MCP-accessible commands.",
                 "mimeType": "application/json",
             },
         ]
@@ -529,14 +500,12 @@ class MicroPythonMcpServer:
                             "- Call `micropython_device_status` before selecting a device strategy.",
                             "- Call `micropython_sync_project` to upload a project folder.",
                             "- Call `micropython_run_and_test` to sync, run, capture output, and report errors.",
+                            "- Call `micropython_filesystem` for device file/folder list, read, write, mkdir, rename, delete, and stat operations.",
+                            "- Call `micropython_soft_reset` after stuck loops, dirty REPL state, or before a clean verification run.",
                             "- MCP tools release the serial port after each sync/run call so the normal extension UI can use it next.",
                             "- Do not use `mpremote`, `ampy`, `esptool`, or raw serial directly unless a MicroPython MCP tool reports unsupported.",
                             "- If the port is busy, wait for the active tool/UI operation to finish or close the MicroPython terminal session.",
                             "- If multiple devices are detected, pass the intended serial `port` argument.",
-                            "- Use `micropython_module_catalog` to see available Driver xAI peripheral module types.",
-                            "- Use `micropython_hardware_configure` to save connected hardware modules.",
-                            "- Use `micropython_hardware_list` to see saved hardware and available commands.",
-                            "- Use `micropython_hardware_run` to control saved hardware modules.",
                         ]),
                     }
                 ]
@@ -545,7 +514,7 @@ class MicroPythonMcpServer:
         if uri == "micropython://device-status":
             payload = {
                 "ok": True,
-                "devices": backend.list_detected_esp_ports(),
+                "devices": list_detected_esp_ports(),
             }
             return {
                 "contents": [
@@ -557,35 +526,13 @@ class MicroPythonMcpServer:
                 ]
             }
 
-        if uri == "micropython://module-catalog":
-            return {
-                "contents": [
-                    {
-                        "uri": uri,
-                        "mimeType": "application/json",
-                        "text": json.dumps(self._driver_xAI.catalog(), indent=2, sort_keys=True),
-                    }
-                ]
-            }
-
-        if uri == "micropython://hardware-profile":
-            return {
-                "contents": [
-                    {
-                        "uri": uri,
-                        "mimeType": "application/json",
-                        "text": json.dumps(self._driver_xAI.hardware_catalog(), indent=2, sort_keys=True),
-                    }
-                ]
-            }
-
         raise McpError(-32602, f"Unknown MicroPython resource: {uri}")
 
     def _resolve_port(self, arguments: dict[str, Any]) -> str:
         explicit = self._optional_string(arguments, "port")
         if explicit:
             return explicit
-        devices = backend.list_detected_esp_ports()
+        devices = list_detected_esp_ports()
         if len(devices) == 1 and devices[0].get("port"):
             return str(devices[0]["port"])
         if len(devices) > 1:
@@ -643,7 +590,7 @@ class MicroPythonMcpServer:
 
     def _required_string(self, arguments: dict[str, Any], key: str) -> str:
         value = self._optional_string(arguments, key)
-        if not value:
+        if value is None:
             raise McpError(-32602, f"{key} is required.")
         return value
 

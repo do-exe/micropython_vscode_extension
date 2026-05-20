@@ -4,13 +4,15 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import {
-  type ClearAllFilesResult,
   LINKED_SYNC_FOLDER_KEY,
   MAX_SYNC_FOLDER_HISTORY,
   POLL_INTERVAL_MS,
   SELECTED_PORT_KEY,
   SESSION_RETRY_BACKOFF_MS,
   SYNC_FOLDER_HISTORY_KEY,
+} from "../core/constants";
+import {
+  type ClearAllFilesResult,
   type DeviceInfo,
   type EnsureSessionOptions,
   type PollOptions,
@@ -18,22 +20,16 @@ import {
   type RunInteractiveFileResult,
   type SessionState,
   type SoftResetResult,
-  type WorkspaceCreateDirectoryResult,
-  type WorkspaceDeleteResult,
   type WorkspaceDirectoryEntry,
-  type WorkspaceDirectoryResult,
   type WorkspaceImportResult,
-  type WorkspaceRenameResult,
   type SyncFolderResult,
   type SyncFolderSelection,
   type WorkspaceStat,
-  type WorkspaceStatResult,
   type WorkspaceStatVfs,
   type WorkspaceTreeEntry,
   type WorkspaceTreeResult,
-  type WorkspaceWriteFileResult,
-} from "../core/shared";
-import { BackendServiceClient } from "../backend/backendServiceClient";
+} from "../core/types";
+import { BackendServiceClient } from "../backend/host/extension/backendServiceClient";
 import { MicroPythonReplPseudoterminal } from "../ui/replTerminal";
 import { MicroPythonActionsViewProvider } from "../ui/actionsView";
 import {
@@ -47,8 +43,10 @@ import {
   normalizeMicroPythonRemotePath,
   parseMicroPythonWorkspaceUri,
 } from "../ui/workspaceFileSystemProvider";
-import { type WorkspaceSelectionMode, MicroPythonWorkspaceItem, MicroPythonWorkspaceViewProvider } from "../ui/workspaceView";
+import { MicroPythonWorkspaceItem, MicroPythonWorkspaceViewProvider } from "../ui/workspaceView";
 import { AICommands } from "../ai/commands";
+import { registerMicroPythonCommands } from "./commandRegistry";
+import type { WorkspaceCommandTarget } from "./types";
 
 const MAX_PROGRESS_MESSAGE_LENGTH = 100;
 const SESSION_OPEN_WAIT_MS = 5000;
@@ -57,12 +55,6 @@ const LINKED_FOLDER_SYNC_DELAY_MS = 800;
 const LINKED_FOLDER_SYNC_RETRY_DELAY_MS = 2000;
 
 type DocumentSyncState = "pending" | "syncing" | "synced" | "error";
-
-type WorkspaceCommandTarget = {
-  remotePath?: string;
-  port?: string;
-  kind?: "file" | "folder" | "placeholder";
-};
 
 type WorkspaceFolderSummary = {
   files: number;
@@ -311,95 +303,37 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   }
 
   private registerCommands(): void {
-    this.context.subscriptions.push(
-      vscode.commands.registerCommand("micropython.selectDevice", async () => {
-        await this.selectDevice();
-      }),
-      vscode.commands.registerCommand("micropython.openTerminal", async () => {
-        await this.openTerminal();
-      }),
-      vscode.commands.registerCommand("micropython.softResetDevice", async () => {
-        await this.softResetDevice();
-      }),
-      vscode.commands.registerCommand("micropython.runCurrentFile", async () => {
-        await this.runCurrentFile();
-      }),
-      vscode.commands.registerCommand("micropython.runInteractiveFile", async () => {
-        await this.runInteractiveFile();
-      }),
-      vscode.commands.registerCommand("micropython.linkFolder", async () => {
-        await this.linkFolderCommand();
-      }),
-      vscode.commands.registerCommand("micropython.syncFolder", async (uri?: vscode.Uri) => {
-        await this.syncFolderCommand(uri);
-      }),
-      vscode.commands.registerCommand("micropython.fetchWorkspace", async () => {
-        await this.fetchWorkspaceCommand();
-      }),
-      vscode.commands.registerCommand("micropython.fetchWorkspacePartial", async () => {
-        await this.fetchWorkspacePartialCommand();
-      }),
-      vscode.commands.registerCommand("micropython.fetchWorkspacePartialConfirm", async () => {
-        await this.confirmWorkspacePartialFetchCommand();
-      }),
-      vscode.commands.registerCommand("micropython.fetchWorkspacePartialClear", async () => {
-        await this.clearWorkspacePartialFetchSelectionCommand();
-      }),
-      vscode.commands.registerCommand("micropython.fetchWorkspacePartialCancel", async () => {
-        await this.cancelWorkspacePartialFetchCommand();
-      }),
-      vscode.commands.registerCommand("micropython.deleteWorkspaceSelection", async () => {
-        await this.deleteWorkspaceSelectionCommand();
-      }),
-      vscode.commands.registerCommand("micropython.deleteWorkspaceSelectionConfirm", async () => {
-        await this.confirmWorkspaceDeleteSelectionCommand();
-      }),
-      vscode.commands.registerCommand("micropython.deleteWorkspaceSelectionClear", async () => {
-        await this.clearWorkspaceDeleteSelectionCommand();
-      }),
-      vscode.commands.registerCommand("micropython.deleteWorkspaceSelectionCancel", async () => {
-        await this.cancelWorkspaceDeleteSelectionCommand();
-      }),
-      vscode.commands.registerCommand("micropython.clearAllFiles", async () => {
-        await this.clearAllFilesCommand();
-      }),
-      vscode.commands.registerCommand("micropython.refreshWorkspace", async () => {
-        await this.refreshWorkspaceCommand();
-      }),
-      vscode.commands.registerCommand("micropython.newWorkspaceFile", async (target?: WorkspaceCommandTarget) => {
-        await this.createWorkspaceFileCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.newWorkspaceFolder", async (target?: WorkspaceCommandTarget) => {
-        await this.createWorkspaceFolderCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.copyWorkspaceEntry", async (target?: WorkspaceCommandTarget) => {
-        await this.copyWorkspaceEntryCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.pasteWorkspaceEntry", async (target?: WorkspaceCommandTarget) => {
-        await this.pasteWorkspaceEntryCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.renameWorkspaceEntry", async (target?: WorkspaceCommandTarget) => {
-        await this.renameWorkspaceEntryCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.deleteWorkspaceEntry", async (target?: WorkspaceCommandTarget) => {
-        await this.deleteWorkspaceEntryCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.showWorkspaceEntryProperties", async (target?: WorkspaceCommandTarget) => {
-        await this.showWorkspaceEntryPropertiesCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.uploadWorkspaceEntry", async (target?: WorkspaceCommandTarget) => {
-        await this.uploadWorkspaceEntryCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.downloadWorkspaceEntry", async (target?: WorkspaceCommandTarget) => {
-        await this.downloadWorkspaceEntryCommand(target);
-      }),
-      vscode.commands.registerCommand("micropython.mountWorkspace", async () => {
-        await this.mountWorkspaceCommand();
-      }),
-      vscode.commands.registerCommand("micropython.openWorkspaceFile", async (remotePath: string, port?: string) => {
-        await this.openWorkspaceFileCommand(remotePath, port);
-      }),
-    );
+    registerMicroPythonCommands(this.context, {
+      selectDevice: () => this.selectDevice(),
+      openTerminal: () => this.openTerminal(),
+      softResetDevice: () => this.softResetDevice(),
+      runCurrentFile: () => this.runCurrentFile(),
+      runInteractiveFile: () => this.runInteractiveFile(),
+      linkFolder: () => this.linkFolderCommand(),
+      syncFolder: (uri?: vscode.Uri) => this.syncFolderCommand(uri),
+      fetchWorkspace: () => this.fetchWorkspaceCommand(),
+      fetchWorkspacePartial: () => this.fetchWorkspacePartialCommand(),
+      confirmWorkspacePartialFetch: () => this.confirmWorkspacePartialFetchCommand(),
+      clearWorkspacePartialFetchSelection: () => this.clearWorkspacePartialFetchSelectionCommand(),
+      cancelWorkspacePartialFetch: () => this.cancelWorkspacePartialFetchCommand(),
+      deleteWorkspaceSelection: () => this.deleteWorkspaceSelectionCommand(),
+      confirmWorkspaceDeleteSelection: () => this.confirmWorkspaceDeleteSelectionCommand(),
+      clearWorkspaceDeleteSelection: () => this.clearWorkspaceDeleteSelectionCommand(),
+      cancelWorkspaceDeleteSelection: () => this.cancelWorkspaceDeleteSelectionCommand(),
+      clearAllFiles: () => this.clearAllFilesCommand(),
+      refreshWorkspace: () => this.refreshWorkspaceCommand(),
+      createWorkspaceFile: (target?: WorkspaceCommandTarget) => this.createWorkspaceFileCommand(target),
+      createWorkspaceFolder: (target?: WorkspaceCommandTarget) => this.createWorkspaceFolderCommand(target),
+      copyWorkspaceEntry: (target?: WorkspaceCommandTarget) => this.copyWorkspaceEntryCommand(target),
+      pasteWorkspaceEntry: (target?: WorkspaceCommandTarget) => this.pasteWorkspaceEntryCommand(target),
+      renameWorkspaceEntry: (target?: WorkspaceCommandTarget) => this.renameWorkspaceEntryCommand(target),
+      deleteWorkspaceEntry: (target?: WorkspaceCommandTarget) => this.deleteWorkspaceEntryCommand(target),
+      showWorkspaceEntryProperties: (target?: WorkspaceCommandTarget) => this.showWorkspaceEntryPropertiesCommand(target),
+      uploadWorkspaceEntry: (target?: WorkspaceCommandTarget) => this.uploadWorkspaceEntryCommand(target),
+      downloadWorkspaceEntry: (target?: WorkspaceCommandTarget) => this.downloadWorkspaceEntryCommand(target),
+      mountWorkspace: () => this.mountWorkspaceCommand(),
+      openWorkspaceFile: (remotePath: string, port?: string) => this.openWorkspaceFileCommand(remotePath, port),
+    });
   }
 
   private async selectDevice(): Promise<void> {
@@ -1830,74 +1764,6 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     return result.entries ?? [];
   }
 
-  private async pickWorkspaceDestinationFolder(): Promise<string | undefined> {
-    type DestinationChoice = vscode.QuickPickItem & {
-      action: "existing" | "new";
-    };
-
-    const choice = await vscode.window.showQuickPick<DestinationChoice>([
-      {
-        label: "$(folder-opened) Existing Folder",
-        detail: "Save the fetched MicroPython files into an existing local folder.",
-        action: "existing",
-      },
-      {
-        label: "$(new-folder) New Folder",
-        detail: "Choose a parent folder, then create a new folder for the fetched MicroPython files.",
-        action: "new",
-      },
-    ], {
-      title: "MicroPython: Choose Save Location",
-      placeHolder: "Select where the fetched MicroPython files should be saved",
-      ignoreFocusOut: true,
-    });
-
-    if (!choice) {
-      return undefined;
-    }
-
-    if (choice.action === "existing") {
-      return this.pickExistingWorkspaceDestinationFolder("Save MicroPython Files", "MicroPython: Select Folder to Save Files");
-    }
-
-    const parentFolder = await this.pickExistingWorkspaceDestinationFolder("Select Parent Folder", "MicroPython: Select Parent Folder");
-    if (!parentFolder) {
-      return undefined;
-    }
-
-    const folderName = await vscode.window.showInputBox({
-      title: "MicroPython: New Folder Name",
-      prompt: "Enter the name of the new folder for fetched MicroPython files",
-      ignoreFocusOut: true,
-      validateInput: (value) => {
-        const trimmed = value.trim();
-        if (!trimmed) {
-          return "Folder name is required.";
-        }
-        if (trimmed.includes("/") || trimmed.includes("\\")) {
-          return "Enter a folder name only, not a path.";
-        }
-        return undefined;
-      },
-    });
-    if (!folderName) {
-      return undefined;
-    }
-
-    const destination = path.resolve(parentFolder, folderName.trim());
-    try {
-      await fs.promises.mkdir(destination, { recursive: false });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-      throw new Error(`Folder already exists: ${destination}`);
-    }
-
-    this.lastWorkspaceDestinationFolder = destination;
-    return destination;
-  }
-
   private async pickExistingWorkspaceDestinationFolder(openLabel: string, title: string): Promise<string | undefined> {
     const picked = await vscode.window.showOpenDialog({
       canSelectFiles: false,
@@ -2360,9 +2226,8 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       return;
     }
 
-    let port: string;
     try {
-      port = await this.resolvePortForOperation();
+      await this.resolvePortForOperation();
     } catch (error) {
       void vscode.window.showErrorMessage(this.errorMessage(error, "No device selected."));
       return;
@@ -2832,15 +2697,6 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   private isPathWithinFolder(targetPath: string, folderPath: string): boolean {
     const relativePath = path.relative(folderPath, targetPath);
     return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
-  }
-
-  private async isFilePath(targetPath: string): Promise<boolean> {
-    try {
-      const stat = await fs.promises.stat(targetPath);
-      return stat.isFile();
-    } catch {
-      return false;
-    }
   }
 
   private async isDirectoryPath(targetPath: string): Promise<boolean> {
