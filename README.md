@@ -1,71 +1,28 @@
-# MicroPython for VS Code
+# MicroPython Extension
 
-VS Code extension for MicroPython-supported devices.
+## What is this?
 
-It gives you two main things:
+MicroPython Extension is a VS Code extension for working with MicroPython boards from one place.
 
-- REPL access in a VS Code terminal
-- Device filesystem control from the sidebar
+It helps you select a serial device, open a REPL terminal, run files, reset the board, sync a local project folder, browse files on the device, and expose the same backend to AI and MCP workflows.
 
-You can connect to a board, open the REPL, edit files on the device, download files, delete files, fetch everything, link a local folder, and upload a whole folder in bulk.
+## Who is it for?
 
-## Current support
+It is for makers, students, and embedded developers who build MicroPython projects inside VS Code and want the board workflow to stay close to their editor.
 
-This release currently supports Linux only.
+It is also for AI-assisted hardware workflows where the assistant needs structured tools instead of guessing raw serial commands.
 
-## What you can do
+## What can it do?
 
-- Select a connected MicroPython device
-- Open a MicroPython terminal and use the REPL
-- Soft reset the device
-- Run the current file in non-interactive mode
-- Run the current file in interactive mode
-- Browse the device workspace in the sidebar
-- Open and edit files directly from the device
-- Create, rename, copy, paste, and delete files or folders
-- Download selected files with the download action
-- Delete selected files with the delete action
-- Fetch all files from the device
-- Link a local folder and sync or upload the whole folder
-
-## AI-Assisted Operations
-
-This extension provides parameterized commands that AI assistants can use for offline device interactions without needing source code access. These commands enable programmatic control over the MicroPython device, and they also prompt for missing inputs when launched manually from the command palette.
-
-The extension also exposes native VS Code Language Model Tools and a bundled MCP stdio server. In Copilot Agent mode or compatible MCP clients, assistants should use these tools instead of guessing external commands like `mpremote`, `ampy`, `esptool`, or direct raw serial access:
-
-- `micropython_device_status`: Check selected and detected MicroPython devices.
-- `micropython_sync_project`: Upload a local project folder through the extension backend.
-- `micropython_run_and_test`: Sync, run, capture output, and return structured errors for MicroPython code.
-
-The bundled MCP server also exposes Driver xAI hardware tools:
-
-- `micropython_module_catalog`: List vendored Driver xAI module types, setup templates, and commands.
-- `micropython_hardware_configure`: Save connected hardware modules, including pins and options.
-- `micropython_hardware_list`: List saved hardware and the commands each module exposes.
-- `micropython_hardware_run`: Run a command on a saved hardware module.
-
-For CLI-first setup, run commands such as `python backend/driver_xAI_cli.py add board_led_pin5 pwm_led --pin pin=5 --option active_high=false`, then inspect the saved circuit with `python backend/driver_xAI_cli.py list`.
-
-The MCP server publishes `micropython://agent-guide`, `micropython://device-status`, `micropython://module-catalog`, and `micropython://hardware-profile` resources for clients that surface MCP resources.
-
-Some agent runtimes only read their own MCP configuration at startup. Use `MicroPython: AI Agent MCP Status` to see whether VS Code tools, the VS Code MCP provider, workspace MCP config, and Codex global MCP config can see the MicroPython server. Use `MicroPython: Configure AI Agent MCP Access` to write `.vscode/mcp.json` and/or sync Codex with `codex mcp add`.
-
-### Available AI Commands
-
-- `micropython.ai.runCode(code: string)`: Execute arbitrary MicroPython code on the device.
-- `micropython.ai.uploadFile(localPath: string, remotePath: string)`: Upload a local file to the device.
-- `micropython.ai.downloadFile(remotePath: string, localPath: string)`: Download a file from the device.
-- `micropython.ai.listFiles(remotePath?: string)`: List files in a device directory (default: "/").
-- `micropython.ai.createDir(remotePath: string)`: Create a directory on the device.
-- `micropython.ai.delete(remotePath: string)`: Delete a file or directory on the device.
-- `micropython.ai.readFile(remotePath: string)`: Read and return file content from the device.
-- `micropython.ai.writeFile(remotePath: string, content: string)`: Write content to a file on the device.
-- `micropython.ai.stat(remotePath: string)`: Get file/directory statistics.
-- `micropython.ai.sendRepl(command: string)`: Send a command to the REPL.
-- `micropython.ai.softReset()`: Perform a soft reset on the device.
-
-**Note**: All commands require a device to be selected first. AI assistants can invoke these using VS Code's command system with positional arguments or a single object argument such as `{ "remotePath": "/boot.py" }`.
+- Select and remember the active MicroPython serial device.
+- Open a persistent MicroPython REPL terminal.
+- Run the active Python file in non-interactive or interactive mode.
+- Soft reset the selected board.
+- Browse, edit, create, rename, copy, paste, delete, upload, and download files on the device.
+- Mount the device filesystem through the `micropython` VS Code filesystem provider.
+- Link a local folder and sync project changes to the device.
+- Use bundled VS Code Language Model tools and the MCP adapter for AI-assisted workflows.
+- Use Driver xAI catalog tools to discover hardware modules, generate mini MicroPython bundles, deploy them, and execute module commands.
 
 ## Install from VSIX
 
@@ -73,63 +30,148 @@ Some agent runtimes only read their own MCP configuration at startup. Use `Micro
 2. Go to the Extensions view.
 3. Click the `...` menu in the top-right of the Extensions panel.
 4. Choose `Install from VSIX...`.
-5. Select your VSIX file, for example `micropython-vscode-extension-0.1.0.vsix`.
-6. Install the extension shown as `MicroPython`.
+5. Select the generated `.vsix` file, for example `micropython-vscode-extension-0.5.0.vsix`.
+6. Install the extension shown as `MicroPython Extension`.
 
 ![Open the Extensions menu and choose Install from VSIX](media/readme/install-from-vsix-file-picker.png)
 
-Open the Extensions menu, then choose `Install from VSIX...`.
-
 ![Select the VSIX package file](media/readme/install-from-vsix-menu.png)
 
-Select the VSIX package file and continue with the installation.
+After install, VS Code shows a `MicroPython` view in the Activity Bar.
 
-After install, you will see a `MicroPython` view in the Activity Bar.
+## First Use
 
-## First use
-
-1. Connect your MicroPython device over USB.
+1. Connect your MicroPython board over USB.
 2. Open the `MicroPython` sidebar.
-3. Click `Select Device`.
-4. Click `Open Terminal` to open the REPL.
-5. Use the `MicroPython Workspace` view to work with files on the device.
-
-When the terminal opens, you can type commands directly and see the board response in VS Code.
+3. Run `MicroPython: Select Device`.
+4. Open the terminal, run a file, or manage the board workspace from the sidebar.
 
 ![MicroPython sidebar with actions, workspace, and REPL terminal](media/readme/micropython-sidebar-terminal.png)
 
-## Workspace actions
+## Actions
 
-The `MicroPython Workspace` view is for device files and folders.
+### 1. Select Device
 
-- Click a file to open and edit it
-- Use refresh to reload the device file tree
-- Use the download action to select files and download them
-- Use the delete action to select files and remove them
-- Use `Link Folder` when you want to sync a local folder to the device in bulk
+Choose the connected MicroPython board or serial port. Select a device first so reset, run, terminal, upload, sync, and workspace actions know which board to use.
 
-This is useful when you want to push a project folder instead of uploading files one by one.
+![Select Device action](media/readme/select-device.png)
+
+After selecting a device, the extension remembers it as the active target for later actions.
+
+![Selected MicroPython device](media/readme/select-device-after.png)
+
+### 2. Open Terminal
+
+Open a MicroPython REPL terminal inside VS Code for direct commands and board output.
+
+![MicroPython terminal](media/readme/terminal.png)
+
+### 3. Soft Reset
+
+Restart the MicroPython runtime on the selected board without unplugging it. This is useful when a script is stuck, when the REPL needs a clean state, or before running another file.
+
+![Soft Reset action](media/readme/soft-reset.png)
+
+### 4. Run Non-Interactive
+
+Run the active file on the selected device and show the output without keeping an interactive session open.
+
+![Non-interactive run result](media/readme/non-interactive-result.png)
+
+### 5. Run Interactive
+
+Run the active file and keep the terminal attached so you can continue interacting with the board.
+
+### 6. Link Folder And Sync
+
+Choose a local project folder to use for device sync and upload workflows.
+
+After the folder is linked, creating or editing files inside that folder can upload the changes to the device.
+
+![Create a file inside the linked folder](media/readme/linked-folder-live-upload.png)
+
+The MicroPython Workspace view can then show the uploaded file on the selected device.
+
+![Uploaded main.py shown on the device](media/readme/device-main-file.png)
+
+### 7. MicroPython Workspace
+
+The MicroPython Workspace view lets you browse and manage files directly on the selected device.
+
+- `New File`: Create a file on the device.
+- `New Folder`: Create a folder on the device.
+- `Refresh Workspace`: Reload the device file tree.
+- `Download Selected Files`: Download selected device files to your local workspace.
+- `Delete Selected Files`: Remove selected files or folders from the device.
+- `Mount Workspace in Explorer`: Open the device workspace through the VS Code Explorer.
 
 ![Workspace actions for refresh, download selection, and delete selection](media/readme/workspace-actions.png)
 
-The download icon starts file selection for download. The delete icon starts file selection for removal.
+![Create a new file on the device](media/readme/new-file.png)
+
+![Create a new folder on the device](media/readme/new-folder.png)
+
+## AI-Assisted Operations
+
+The extension exposes native VS Code Language Model tools and a bundled MCP stdio server. AI agents should use these tools instead of guessing external commands like `mpremote`, `ampy`, `esptool`, or raw serial access.
+
+Core MicroPython tools:
+
+- `micropython_device_status`: Check selected and detected MicroPython devices.
+- `micropython_sync_project`: Upload a local project folder through the extension backend.
+- `micropython_run_and_test`: Sync, run, capture output, and return structured errors.
+- `micropython_filesystem`: List, read, write, create, rename, delete, and stat device files.
+- `micropython_soft_reset`: Soft reset the selected MicroPython device.
+
+Driver xAI tools:
+
+- `driver_xai_validate`: Validate the Driver xAI catalog structure.
+- `driver_xai_search`: Search modules by module id or module name.
+- `driver_xai_registry`: Read protocol or interface registries.
+- `driver_xai_info`: Read module identity from `info.json`.
+- `driver_xai_inspect`: List module files, drivers, examples, keys, and commands.
+- `driver_xai_get`: Read module JSON data or driver source.
+- `driver_xai_prepare_bundle`: Generate a mini MicroPython project from selected modules.
+- `driver_xai_deploy_bundle`: Upload a generated bundle to a MicroPython device.
+- `driver_xai_execute`: Build, deploy, and run a module command through the extension backend.
+
+## Repository Layout
+
+- `src/backend/host/extension`: VS Code TypeScript host backend.
+- `src/backend/host/python_service`: Local Python service, serial backend, MCP server, and Driver xAI adapter.
+- `src/backend/device`: MicroPython snippets sent to the device.
+- `vendor/driver_xAI`: Vendored Driver xAI catalog submodule.
+- `runtime`: Packaged Python runtime used by the extension.
+
+See [Architecture](docs/ARCHITECTURE.md) for the detailed backend split.
 
 ## Requirements
 
-- VS Code 1.109.0 or newer
-- A MicroPython-compatible device
-- USB or serial permission on Linux
+- VS Code 1.109.0 or newer.
+- A MicroPython-compatible board.
+- USB or serial access to the board.
+- A packaged runtime for your platform. This repository currently includes `linux-x64` and `win32-x64` runtime folders.
 
-## Notes
-
-- This extension is focused on simple MicroPython workflow inside VS Code
-- Cross-platform runtime support is not included yet
-
-## Build from source
-
-If you are working on this repository:
+## Development
 
 ```bash
 npm install
-npm run build
+npm run compile -- --pretty false
+python3 -m pytest tests/python -q
+npm run py:compile
 ```
+
+For setup details, contribution rules, and support information, read:
+
+- [Development Guide](docs/DEVELOPMENT.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+
+## Packaging
+
+```bash
+npm run package:vsix
+```
+
+Packaging stages the bundled runtime, compiles TypeScript, and creates a `.vsix` package.
