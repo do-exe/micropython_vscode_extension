@@ -2,11 +2,15 @@
   "name": "micropython-vscode-extension",
   "displayName": "MicroPython Extension",
   "description": "General MicroPython device extension for persistent REPL access and remote workspace file management.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "do-exe",
   "author": "do-exe",
   "license": "MIT",
   "icon": "media/micropython-marketplace-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/do-exe/micropython_vscode_extension.git"
+  },
   "bugs": {
     "email": "maildoexe@gmail.com"
   },
@@ -646,7 +650,7 @@
     "py:compile": "python3 -m compileall -q src/backend/host/python_service src/backend/device",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run build",
-    "package:vsix": "npm run build && npx @vscode/vsce package --allow-missing-repository --no-rewrite-relative-links --no-dependencies --no-yarn"
+    "package:vsix": "npm run build && npx @vscode/vsce package --no-dependencies --no-yarn"
   },
   "overrides": {
     "cheerio": "1.0.0-rc.12"

@@ -30,12 +30,12 @@ It is also for AI-assisted hardware workflows where the assistant needs structur
 2. Go to the Extensions view.
 3. Click the `...` menu in the top-right of the Extensions panel.
 4. Choose `Install from VSIX...`.
-5. Select the generated `.vsix` file, for example `micropython-vscode-extension-0.5.0.vsix`.
+5. Select the generated `.vsix` file, for example `micropython-vscode-extension-0.6.0.vsix`.
 6. Install the extension shown as `MicroPython Extension`.
 
-![Open the Extensions menu and choose Install from VSIX](media/readme/install-from-vsix-file-picker.png)
+![Open the Extensions menu and choose Install from VSIX](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/install-from-vsix-file-picker.png)
 
-![Select the VSIX package file](media/readme/install-from-vsix-menu.png)
+![Select the VSIX package file](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/install-from-vsix-menu.png)
 
 After install, VS Code shows a `MicroPython` view in the Activity Bar.
 
@@ -46,7 +46,7 @@ After install, VS Code shows a `MicroPython` view in the Activity Bar.
 3. Run `MicroPython: Select Device`.
 4. Open the terminal, run a file, or manage the board workspace from the sidebar.
 
-![MicroPython sidebar with actions, workspace, and REPL terminal](media/readme/micropython-sidebar-terminal.png)
+![MicroPython sidebar with actions, workspace, and REPL terminal](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/micropython-sidebar-terminal.png)
 
 ## Actions
 
@@ -54,29 +54,29 @@ After install, VS Code shows a `MicroPython` view in the Activity Bar.
 
 Choose the connected MicroPython board or serial port. Select a device first so reset, run, terminal, upload, sync, and workspace actions know which board to use.
 
-![Select Device action](media/readme/select-device.png)
+![Select Device action](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/select-device.png)
 
 After selecting a device, the extension remembers it as the active target for later actions.
 
-![Selected MicroPython device](media/readme/select-device-after.png)
+![Selected MicroPython device](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/select-device-after.png)
 
 ### 2. Open Terminal
 
 Open a MicroPython REPL terminal inside VS Code for direct commands and board output.
 
-![MicroPython terminal](media/readme/terminal.png)
+![MicroPython terminal](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/terminal.png)
 
 ### 3. Soft Reset
 
 Restart the MicroPython runtime on the selected board without unplugging it. This is useful when a script is stuck, when the REPL needs a clean state, or before running another file.
 
-![Soft Reset action](media/readme/soft-reset.png)
+![Soft Reset action](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/soft-reset.png)
 
 ### 4. Run Non-Interactive
 
 Run the active file on the selected device and show the output without keeping an interactive session open.
 
-![Non-interactive run result](media/readme/non-interactive-result.png)
+![Non-interactive run result](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/non-interactive-result.png)
 
 ### 5. Run Interactive
 
@@ -88,11 +88,11 @@ Choose a local project folder to use for device sync and upload workflows.
 
 After the folder is linked, creating or editing files inside that folder can upload the changes to the device.
 
-![Create a file inside the linked folder](media/readme/linked-folder-live-upload.png)
+![Create a file inside the linked folder](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/linked-folder-live-upload.png)
 
 The MicroPython Workspace view can then show the uploaded file on the selected device.
 
-![Uploaded main.py shown on the device](media/readme/device-main-file.png)
+![Uploaded main.py shown on the device](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/device-main-file.png)
 
 ### 7. MicroPython Workspace
 
@@ -105,11 +105,11 @@ The MicroPython Workspace view lets you browse and manage files directly on the 
 - `Delete Selected Files`: Remove selected files or folders from the device.
 - `Mount Workspace in Explorer`: Open the device workspace through the VS Code Explorer.
 
-![Workspace actions for refresh, download selection, and delete selection](media/readme/workspace-actions.png)
+![Workspace actions for refresh, download selection, and delete selection](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/workspace-actions.png)
 
-![Create a new file on the device](media/readme/new-file.png)
+![Create a new file on the device](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/new-file.png)
 
-![Create a new folder on the device](media/readme/new-folder.png)
+![Create a new folder on the device](https://raw.githubusercontent.com/do-exe/micropython_vscode_extension/main/media/readme/new-folder.png)
 
 ## AI-Assisted Operations
 
@@ -134,6 +134,8 @@ Driver xAI tools:
 - `driver_xai_prepare_bundle`: Generate a mini MicroPython project from selected modules.
 - `driver_xai_deploy_bundle`: Upload a generated bundle to a MicroPython device.
 - `driver_xai_execute`: Build, deploy, and run a module command through the extension backend.
+
+For `driver_xai_get`, JSON sources are `info`, `parameters`, and `commands`. Driver sources can use exact filenames returned by `driver_xai_inspect`, such as `micropython.py`, or friendly aliases such as `driver`, `micropython`, `py`, `c`, and `rust`. Unknown driver sources return the requested source, available driver sources, and a suggested source when one exists.
 
 ## Repository Layout
 

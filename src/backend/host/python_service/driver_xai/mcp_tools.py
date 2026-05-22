@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .bundle import prepare_bundle
-from .catalog import DriverXaiCatalog
+from .catalog import DriverXaiCatalog, DriverXaiError
 from .deploy import deploy_bundle
 from .execute import DEFAULT_EXECUTE_TIMEOUT_SECONDS, execute_module
 from .validator import validate_catalog
@@ -28,11 +28,16 @@ class DriverXaiMcpTools:
             handler = self.handlers[name]
             return handler(arguments, session=session, resolve_port=resolve_port)
         except Exception as exc:
-            return {
+            response = {
                 "ok": False,
                 "tool": name,
                 "error": str(exc),
             }
+            if isinstance(exc, DriverXaiError):
+                if exc.code:
+                    response["code"] = exc.code
+                response.update(exc.details)
+            return response
 
     @property
     def handlers(self) -> dict[str, Callable[..., dict[str, Any]]]:
@@ -125,7 +130,10 @@ class DriverXaiMcpTools:
                         "moduleId": {"type": "string"},
                         "hasVariant": {"type": "boolean"},
                         "variantName": {"type": "string"},
-                        "source": {"type": "string"},
+                        "source": {
+                            "type": "string",
+                            "description": "For JSON use info, parameters, or commands. For drivers use an exact driver filename from driver_xai_inspect, or aliases such as driver, micropython, py, c, or rust.",
+                        },
                         "fileType": {"type": "string", "enum": ["json", "driver"]},
                         "key": {"type": "string", "default": "all"},
                         "catalogRoot": {"type": "string"},

@@ -13,6 +13,7 @@ for path in (str(PYTHON_SERVICE_PARENT), str(BACKEND_ROOT)):
 
 from python_service.driver_xai import DriverXaiCatalog, execute_module, prepare_bundle, validate_catalog
 from python_service.driver_xai.execute import build_execute_plan
+from python_service.driver_xai.mcp_tools import DriverXaiMcpTools
 
 
 CATALOG_ROOT = pathlib.Path(__file__).resolve().parents[2] / "vendor" / "driver_xAI"
@@ -46,6 +47,32 @@ class DriverXaiCatalogTests(unittest.TestCase):
         self.assertIn("micropython.py", result["drivers"])
         self.assertIn("set_color", result["commands"])
         self.assertTrue(result["read_only"])
+
+    def test_catalog_get_driver_accepts_friendly_aliases(self) -> None:
+        catalog = DriverXaiCatalog(str(CATALOG_ROOT))
+
+        source = catalog.get("led", False, None, "driver", "driver")
+        micropython_source = catalog.get("led", False, None, "micropython", "driver")
+
+        self.assertIn("class Driver", source)
+        self.assertEqual(source, micropython_source)
+
+    def test_driver_xai_get_reports_available_sources_for_unknown_driver(self) -> None:
+        result = DriverXaiMcpTools().call_tool(
+            "driver_xai_get",
+            {
+                "moduleId": "led",
+                "source": "not_a_driver",
+                "fileType": "driver",
+                "catalogRoot": str(CATALOG_ROOT),
+            },
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "unknown_source")
+        self.assertEqual(result["requestedSource"], "not_a_driver")
+        self.assertIn("micropython.py", result["availableSources"])
+        self.assertEqual(result["suggestedSource"], "micropython.py")
 
     def test_prepare_bundle_generates_micro_python_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

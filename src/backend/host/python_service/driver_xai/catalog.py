@@ -12,7 +12,10 @@ JSON_SOURCES = {"info", "parameters", "commands"}
 
 
 class DriverXaiError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str | None = None, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
 
 
 def resolve_catalog_root(catalog_root: str | os.PathLike[str] | None = None) -> Path:
@@ -150,7 +153,7 @@ class DriverXaiCatalog:
             data = self._read_json(module_dir / source_name)
             return data if key == "all" else data[key]
         if normalized_type == "driver":
-            driver_name = self._driver_source_name(source)
+            driver_name = self._driver_source_name(module_dir, source)
             return (module_dir / "drivers" / driver_name).read_text(encoding="utf-8")
         raise DriverXaiError("file_type must be json or driver")
 
@@ -205,13 +208,42 @@ class DriverXaiCatalog:
             raise DriverXaiError(f"JSON source must be one of {sorted(JSON_SOURCES)}")
         return f"{normalized}.json"
 
-    def _driver_source_name(self, source: str) -> str:
+    def _driver_source_name(self, module_dir: Path, source: str) -> str:
         normalized = str(source).strip()
-        if not normalized:
-            normalized = "micropython.py"
-        if normalized == "micropython":
-            normalized = "micropython.py"
-        return normalized
+        drivers_dir = module_dir / "drivers"
+        available = sorted(path.name for path in drivers_dir.iterdir() if path.is_file()) if drivers_dir.is_dir() else []
+        aliases = {
+            "": "micropython.py",
+            "default": "micropython.py",
+            "driver": "micropython.py",
+            "micropython": "micropython.py",
+            "py": "micropython.py",
+            "c": "c.c",
+            "rust": "rust.rs",
+            "rs": "rust.rs",
+        }
+        driver_name = aliases.get(normalized.lower(), normalized)
+        if driver_name in available:
+            return driver_name
+        if normalized == "" and "micropython.py" in available:
+            return "micropython.py"
+
+        suggestion = "micropython.py" if "micropython.py" in available else (available[0] if available else None)
+        message = (
+            f"Unknown driver source {normalized!r} for module {module_dir.name}. "
+            f"Available driver sources: {', '.join(available) or 'none'}."
+        )
+        if suggestion:
+            message = f"{message} Did you mean {suggestion!r}?"
+        raise DriverXaiError(
+            message,
+            code="unknown_source",
+            details={
+                "requestedSource": normalized,
+                "availableSources": available,
+                "suggestedSource": suggestion,
+            },
+        )
 
     def _normalize_query(self, value: str) -> str:
         query = str(value).strip().lower()

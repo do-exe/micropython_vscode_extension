@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 - 2026-05-20
+
+- Added the vendored Driver xAI catalog integration for module discovery, registry lookup, validation, and module inspection.
+- Added Driver xAI mini MicroPython bundle generation, deployment, and command execution through the existing MicroPython backend.
+- Added Driver xAI MCP tools: validate, search, registry, info, inspect, get, prepare bundle, deploy bundle, and execute.
+
 ## 0.5.0 - 2026-05-12
 
 - Added bundled Windows x64 runtime support so the extension can run on Windows without depending on user-installed Python packages.
