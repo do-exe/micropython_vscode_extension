@@ -7,7 +7,16 @@ import {
   LINKED_SYNC_FOLDER_KEY,
   MAX_SYNC_FOLDER_HISTORY,
   POLL_INTERVAL_MS,
+  RECENT_PLATFORM_PROJECTS_KEY,
+  SELECTED_ARDUINO_FQBN_KEY,
+  SELECTED_ARDUINO_PROJECT_FOLDER_KEY,
+  SELECTED_ESP_IDF_TARGET_KEY,
+  SELECTED_ESP_IDF_PROJECT_FOLDER_KEY,
+  SELECTED_MICROPYTHON_PROJECT_FOLDER_KEY,
+  SELECTED_PLATFORM_KEY,
   SELECTED_PORT_KEY,
+  SELECTED_STM_PROJECT_FOLDER_KEY,
+  SELECTED_STM_TARGET_KEY,
   SESSION_RETRY_BACKOFF_MS,
   SYNC_FOLDER_HISTORY_KEY,
 } from "../core/constants";
@@ -24,6 +33,7 @@ import {
   type WorkspaceImportResult,
   type SyncFolderResult,
   type SyncFolderSelection,
+  type ToolchainCommandResult,
   type WorkspaceStat,
   type WorkspaceStatVfs,
   type WorkspaceTreeEntry,
@@ -32,6 +42,15 @@ import {
 import { BackendServiceClient } from "../backend/host/extension/backendServiceClient";
 import { MicroPythonReplPseudoterminal } from "../ui/replTerminal";
 import { MicroPythonActionsViewProvider } from "../ui/actionsView";
+import {
+  EspIdfActionViewProvider,
+  PlatformActionViewProvider,
+  PlatformLauncherViewProvider,
+  PlatformProjectViewProvider,
+  type PlatformId,
+  type PlatformProjectSetup,
+  type PlatformRecentProject,
+} from "../ui/platformLauncherView";
 import {
   MicroPythonWorkspaceFileSystemProvider,
   createMicroPythonWorkspaceChildUri,
@@ -62,6 +81,15 @@ type WorkspaceFolderSummary = {
   bytes: number;
 };
 
+type RecentPlatformProjectState = {
+  platformId: PlatformId;
+  name: string;
+  folder: string;
+  lastOpened: number;
+  boardTarget?: string;
+  port?: string;
+};
+
 export class MicroPythonExtensionController implements vscode.Disposable {
   private readonly backend: BackendServiceClient;
   private readonly aiCommands: AICommands;
@@ -74,6 +102,10 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   private readonly cleanupOutput: vscode.OutputChannel;
   private readonly workspaceOutput: vscode.OutputChannel;
   private readonly workspaceFetchOutput: vscode.OutputChannel;
+  private readonly arduinoOutput: vscode.OutputChannel;
+  private readonly espIdfOutput: vscode.OutputChannel;
+  private readonly stmOutput: vscode.OutputChannel;
+  private readonly platformLauncherViewProvider: PlatformLauncherViewProvider;
   private readonly workspaceTreeView: vscode.TreeView<MicroPythonWorkspaceItem>;
   private readonly workspaceViewProvider: MicroPythonWorkspaceViewProvider;
   private readonly workspaceFileSystemProvider: MicroPythonWorkspaceFileSystemProvider;
@@ -139,6 +171,9 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     this.cleanupOutput = vscode.window.createOutputChannel("MicroPython Clear All Files");
     this.workspaceOutput = vscode.window.createOutputChannel("MicroPython Workspace");
     this.workspaceFetchOutput = vscode.window.createOutputChannel("MicroPython Workspace Fetch");
+    this.arduinoOutput = vscode.window.createOutputChannel("Arduino");
+    this.espIdfOutput = vscode.window.createOutputChannel("ESP-IDF");
+    this.stmOutput = vscode.window.createOutputChannel("STM");
     this.workspaceFileSystemProvider = new MicroPythonWorkspaceFileSystemProvider({
       stat: async (uri: vscode.Uri) => this.statWorkspaceUri(uri),
       readDirectory: async (uri: vscode.Uri) => this.readWorkspaceDirectoryUri(uri),
@@ -152,12 +187,14 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       scanTree: async () => this.scanWorkspaceTree(),
       shouldAutoLoad: () => this.shouldAutoScanWorkspace(),
     });
+    this.platformLauncherViewProvider = new PlatformLauncherViewProvider(() => this.getRecentPlatformProjectsForView());
     this.workspaceTreeView = vscode.window.createTreeView("micropython.workspaceView", {
       treeDataProvider: this.workspaceViewProvider,
       manageCheckboxStateManually: true,
     });
     this.selectedPort = this.context.globalState.get<string>(SELECTED_PORT_KEY);
     this.setRunVisible(false);
+    void this.restorePlatformSelection();
     void this.setWorkspaceClipboard(undefined);
     void this.updateWorkspaceSelectionState();
 
@@ -171,7 +208,87 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       vscode.workspace.registerFileSystemProvider("micropython", this.workspaceFileSystemProvider, {
         isCaseSensitive: true,
       }),
+      vscode.window.registerWebviewViewProvider(PlatformLauncherViewProvider.viewType, this.platformLauncherViewProvider),
+      vscode.window.registerWebviewViewProvider("micropython.micropythonProjectView", new PlatformProjectViewProvider("micropython", "MicroPython")),
+      vscode.window.registerWebviewViewProvider("micropython.arduinoProjectView", new PlatformProjectViewProvider("arduino", "Arduino")),
+      vscode.window.registerWebviewViewProvider("micropython.espIdfProjectView", new PlatformProjectViewProvider("espidf", "ESP-IDF")),
+      vscode.window.registerWebviewViewProvider("micropython.stmProjectView", new PlatformProjectViewProvider("stm", "STM")),
+      vscode.commands.registerCommand("micropython.selectPlatform", async (platformId: PlatformId) => {
+        await this.selectPlatform(platformId);
+      }),
+      vscode.commands.registerCommand("micropython.createPlatformProject", async (platformId: PlatformId) => {
+        await this.createPlatformProjectCommand(platformId);
+      }),
+      vscode.commands.registerCommand("micropython.openPlatformProject", async (platformId: PlatformId) => {
+        await this.openPlatformProjectCommand(platformId);
+      }),
+      vscode.commands.registerCommand("micropython.launchNewPlatformProject", async (setup: PlatformProjectSetup) => {
+        await this.launchNewPlatformProjectCommand(setup);
+      }),
+      vscode.commands.registerCommand("micropython.openRecentPlatformProject", async (platformId: PlatformId, folder: string) => {
+        await this.openRecentPlatformProjectCommand(platformId, folder);
+      }),
+      vscode.commands.registerCommand("micropython.showPlatformLauncher", async () => {
+        await this.showPlatformLauncher();
+      }),
+      vscode.commands.registerCommand("micropython.arduino.toolchainStatus", async () => {
+        await this.arduinoToolchainStatusCommand();
+      }),
+      vscode.commands.registerCommand("micropython.arduino.installCore", async () => {
+        await this.arduinoInstallCoreCommand();
+      }),
+      vscode.commands.registerCommand("micropython.arduino.selectProjectFolder", async () => {
+        await this.selectArduinoProjectFolderCommand();
+      }),
+      vscode.commands.registerCommand("micropython.arduino.selectBoard", async () => {
+        await this.selectArduinoBoardCommand();
+      }),
+      vscode.commands.registerCommand("micropython.arduino.compile", async () => {
+        await this.arduinoCompileCommand();
+      }),
+      vscode.commands.registerCommand("micropython.arduino.upload", async () => {
+        await this.arduinoUploadCommand();
+      }),
+      vscode.commands.registerCommand("micropython.arduino.compileAndUpload", async () => {
+        await this.arduinoCompileAndUploadCommand();
+      }),
+      vscode.commands.registerCommand("micropython.espIdf.status", async () => {
+        await this.espIdfStatusCommand();
+      }),
+      vscode.commands.registerCommand("micropython.espIdf.selectProjectFolder", async () => {
+        await this.selectEspIdfProjectFolderCommand();
+      }),
+      vscode.commands.registerCommand("micropython.espIdf.setTarget", async () => {
+        await this.espIdfSetTargetCommand();
+      }),
+      vscode.commands.registerCommand("micropython.espIdf.build", async () => {
+        await this.espIdfBuildCommand();
+      }),
+      vscode.commands.registerCommand("micropython.espIdf.flash", async () => {
+        await this.espIdfFlashCommand();
+      }),
+      vscode.commands.registerCommand("micropython.espIdf.buildAndFlash", async () => {
+        await this.espIdfBuildAndFlashCommand();
+      }),
+      vscode.commands.registerCommand("micropython.stm.stlinkStatus", async () => {
+        await this.stmStlinkStatusCommand();
+      }),
+      vscode.commands.registerCommand("micropython.stm.buildFirmware", async () => {
+        await this.stmBuildFirmwareCommand();
+      }),
+      vscode.commands.registerCommand("micropython.stm.flashFirmware", async () => {
+        await this.stmFlashFirmwareCommand();
+      }),
+      vscode.commands.registerCommand("micropython.stm.buildAndFlash", async () => {
+        await this.stmBuildAndFlashCommand();
+      }),
+      vscode.commands.registerCommand("micropython.stm.eraseChip", async () => {
+        await this.stmEraseChipCommand();
+      }),
       vscode.window.registerTreeDataProvider("micropython.actionsView", new MicroPythonActionsViewProvider()),
+      vscode.window.registerTreeDataProvider("micropython.arduinoView", new PlatformActionViewProvider("arduino")),
+      vscode.window.registerTreeDataProvider("micropython.espIdfView", new EspIdfActionViewProvider(this.context.extensionPath)),
+      vscode.window.registerTreeDataProvider("micropython.stmView", new PlatformActionViewProvider("stm")),
       this.workspaceTreeView,
       this.workspaceViewProvider.onDidChangeSelectionState(() => {
         void this.updateWorkspaceSelectionState();
@@ -234,6 +351,9 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       this.cleanupOutput,
       this.workspaceOutput,
       this.workspaceFetchOutput,
+      this.arduinoOutput,
+      this.espIdfOutput,
+      this.stmOutput,
     );
     this.registerCommands();
     this.aiCommands.registerCommands(this.context);
@@ -263,6 +383,939 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     this.pollTimer = setInterval(() => {
       void this.pollDevices({ allowSessionConnect: this.shouldAutoConnectOnDetect() });
     }, POLL_INTERVAL_MS);
+  }
+
+  private async showPlatformLauncher(): Promise<void> {
+    await this.context.globalState.update(SELECTED_PLATFORM_KEY, undefined);
+    await this.applyPlatformContexts(undefined);
+    await this.tryExecuteCommand(`${PlatformLauncherViewProvider.viewType}.focus`);
+    this.platformLauncherViewProvider.refresh();
+  }
+
+  private async restorePlatformSelection(): Promise<void> {
+    const platformId = this.context.globalState.get<string>(SELECTED_PLATFORM_KEY);
+    if (!this.isPlatformId(platformId)) {
+      await this.showPlatformLauncher();
+      return;
+    }
+
+    await this.applyPlatformSelection(platformId);
+  }
+
+  private async selectPlatform(platformId: PlatformId): Promise<void> {
+    await this.context.globalState.update(SELECTED_PLATFORM_KEY, platformId);
+    await this.applyPlatformSelection(platformId);
+    await this.focusPlatformPrimaryView(platformId);
+  }
+
+  private async applyPlatformSelection(platformId: PlatformId): Promise<void> {
+    await this.applyPlatformContexts(platformId);
+  }
+
+  private async applyPlatformContexts(platformId: PlatformId | undefined): Promise<void> {
+    const projectSelected = platformId ? Boolean(await this.getSelectedPlatformProjectFolder(platformId)) : false;
+    const launcherActive = platformId === undefined || !projectSelected;
+    await Promise.all([
+      vscode.commands.executeCommand("setContext", "micropython.platform.launcherActive", launcherActive),
+      vscode.commands.executeCommand("setContext", "micropython.platform.micropythonProjectPickerActive", false),
+      vscode.commands.executeCommand("setContext", "micropython.platform.arduinoProjectPickerActive", false),
+      vscode.commands.executeCommand("setContext", "micropython.platform.espIdfProjectPickerActive", false),
+      vscode.commands.executeCommand("setContext", "micropython.platform.stmProjectPickerActive", false),
+      vscode.commands.executeCommand("setContext", "micropython.platform.micropythonProjectActive", platformId === "micropython" && projectSelected),
+      vscode.commands.executeCommand("setContext", "micropython.platform.arduinoProjectActive", platformId === "arduino" && projectSelected),
+      vscode.commands.executeCommand("setContext", "micropython.platform.espIdfProjectActive", platformId === "espidf" && projectSelected),
+      vscode.commands.executeCommand("setContext", "micropython.platform.stmProjectActive", platformId === "stm" && projectSelected),
+    ]);
+  }
+
+  private isPlatformId(value: unknown): value is PlatformId {
+    return value === "micropython" || value === "arduino" || value === "espidf" || value === "stm";
+  }
+
+  private async focusPlatformPrimaryView(platformId: PlatformId): Promise<void> {
+    const hasProject = Boolean(await this.getSelectedPlatformProjectFolder(platformId));
+    if (!hasProject) {
+      await this.tryExecuteCommand("micropython.platformLauncherView.focus");
+      return;
+    }
+
+    const focusCommandByPlatform: Record<PlatformId, string> = {
+      micropython: "micropython.actionsView.focus",
+      arduino: "micropython.arduinoView.focus",
+      espidf: "micropython.espIdfView.focus",
+      stm: "micropython.stmView.focus",
+    };
+
+    await this.tryExecuteCommand(focusCommandByPlatform[platformId]);
+  }
+
+  private async tryExecuteCommand(command: string): Promise<void> {
+    try {
+      await vscode.commands.executeCommand(command);
+    } catch {
+      // Some VS Code builds do not expose focus commands for contributed views.
+    }
+  }
+
+  private async createPlatformProjectCommand(platformId: PlatformId): Promise<void> {
+    const projectName = await vscode.window.showInputBox({
+      title: `${this.platformLabel(platformId)}: Create Project`,
+      prompt: "Project folder name",
+      value: this.defaultProjectName(platformId),
+      ignoreFocusOut: true,
+      validateInput: (candidate) => candidate.trim().length > 0 ? undefined : "Project name is required.",
+    });
+    if (!projectName) {
+      return;
+    }
+
+    const parent = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: "Create Here",
+      title: `${this.platformLabel(platformId)}: Select Parent Folder`,
+      defaultUri: this.getDefaultLocalFolderUri(),
+    });
+    if (!parent || parent.length === 0) {
+      return;
+    }
+
+    const projectFolder = path.join(parent[0].fsPath, projectName.trim());
+    try {
+      if (await this.pathExists(projectFolder)) {
+        void vscode.window.showErrorMessage(`Project folder already exists: ${projectFolder}`);
+        return;
+      }
+
+      await fs.promises.mkdir(projectFolder, { recursive: true });
+      await fs.promises.cp(this.platformTemplateFolder(platformId), projectFolder, { recursive: true });
+      await this.setSelectedPlatformProjectFolder(platformId, projectFolder);
+      await this.rememberRecentPlatformProject(platformId, projectFolder);
+      await this.addFolderToWorkspace(projectFolder);
+      await this.applyPlatformSelection(platformId);
+      await this.focusPlatformPrimaryView(platformId);
+      void vscode.window.showInformationMessage(`${this.platformLabel(platformId)} project created: ${projectFolder}`);
+    } catch (error) {
+      void vscode.window.showErrorMessage(this.errorMessage(error, `Failed to create ${this.platformLabel(platformId)} project.`));
+    }
+  }
+
+  private async openPlatformProjectCommand(platformId: PlatformId): Promise<void> {
+    const folder = await this.pickToolchainProjectFolder(`${this.platformLabel(platformId)}: Open Project`, "Open Project");
+    if (!folder) {
+      return;
+    }
+
+    await this.setSelectedPlatformProjectFolder(platformId, folder);
+    await this.rememberRecentPlatformProject(platformId, folder);
+    await this.addFolderToWorkspace(folder);
+    await this.applyPlatformSelection(platformId);
+    await this.focusPlatformPrimaryView(platformId);
+    void vscode.window.showInformationMessage(`${this.platformLabel(platformId)} project opened: ${folder}`);
+  }
+
+  private async launchNewPlatformProjectCommand(setup: PlatformProjectSetup): Promise<void> {
+    if (!this.isPlatformId(setup.platformId)) {
+      return;
+    }
+
+    const projectName = setup.projectName.trim();
+    const parentFolder = setup.parentFolder.trim();
+    if (!projectName || !parentFolder) {
+      void vscode.window.showErrorMessage("Project name and location are required.");
+      return;
+    }
+
+    const projectFolder = path.join(parentFolder, projectName);
+    try {
+      if (await this.pathExists(projectFolder)) {
+        void vscode.window.showErrorMessage(`Project folder already exists: ${projectFolder}`);
+        return;
+      }
+
+      await fs.promises.mkdir(projectFolder, { recursive: true });
+      await fs.promises.cp(this.platformTemplateFolder(setup.platformId), projectFolder, { recursive: true });
+      await this.applyPlatformSetup(setup.platformId, setup.boardTarget, setup.port);
+      await this.setSelectedPlatformProjectFolder(setup.platformId, projectFolder);
+      await this.rememberRecentPlatformProject(setup.platformId, projectFolder, {
+        boardTarget: setup.boardTarget,
+        port: setup.port,
+      });
+      await this.addFolderToWorkspace(projectFolder);
+      await this.context.globalState.update(SELECTED_PLATFORM_KEY, setup.platformId);
+      this.platformLauncherViewProvider.refresh();
+      await this.applyPlatformSelection(setup.platformId);
+      await this.focusPlatformPrimaryView(setup.platformId);
+      void vscode.window.showInformationMessage(`${this.platformLabel(setup.platformId)} environment launched: ${projectFolder}`);
+    } catch (error) {
+      void vscode.window.showErrorMessage(this.errorMessage(error, `Failed to launch ${this.platformLabel(setup.platformId)} environment.`));
+    }
+  }
+
+  private async openRecentPlatformProjectCommand(platformId: PlatformId, folder: string): Promise<void> {
+    if (!this.isPlatformId(platformId)) {
+      return;
+    }
+    if (!await this.isDirectoryPath(folder)) {
+      void vscode.window.showWarningMessage(`Recent project folder no longer exists: ${folder}`);
+      await this.removeRecentPlatformProject(folder);
+      this.platformLauncherViewProvider.refresh();
+      return;
+    }
+
+    const recent = this.readRecentPlatformProjects().find((project) => path.resolve(project.folder) === path.resolve(folder));
+    await this.applyPlatformSetup(platformId, recent?.boardTarget, recent?.port);
+    await this.setSelectedPlatformProjectFolder(platformId, folder);
+    await this.rememberRecentPlatformProject(platformId, folder, {
+      boardTarget: recent?.boardTarget,
+      port: recent?.port,
+    });
+    await this.addFolderToWorkspace(folder);
+    await this.context.globalState.update(SELECTED_PLATFORM_KEY, platformId);
+    this.platformLauncherViewProvider.refresh();
+    await this.applyPlatformSelection(platformId);
+    await this.focusPlatformPrimaryView(platformId);
+    void vscode.window.showInformationMessage(`${this.platformLabel(platformId)} project opened: ${folder}`);
+  }
+
+  private async getSelectedPlatformProjectFolder(platformId: PlatformId): Promise<string | undefined> {
+    const key = this.platformProjectStateKey(platformId);
+    const stored = this.context.workspaceState.get<string>(key);
+    if (!stored) {
+      return undefined;
+    }
+    if (await this.isDirectoryPath(stored)) {
+      return stored;
+    }
+    await this.context.workspaceState.update(key, undefined);
+    return undefined;
+  }
+
+  private async setSelectedPlatformProjectFolder(platformId: PlatformId, folder: string): Promise<void> {
+    await this.context.workspaceState.update(this.platformProjectStateKey(platformId), folder);
+  }
+
+  private getRecentPlatformProjectsForView(): PlatformRecentProject[] {
+    return this.readRecentPlatformProjects().map((project) => ({
+      platformId: project.platformId,
+      platformLabel: this.platformLabel(project.platformId),
+      name: project.name || path.basename(project.folder),
+      folder: project.folder,
+    }));
+  }
+
+  private readRecentPlatformProjects(): RecentPlatformProjectState[] {
+    const raw = this.context.globalState.get<unknown>(RECENT_PLATFORM_PROJECTS_KEY);
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw.flatMap((candidate): RecentPlatformProjectState[] => {
+      if (!candidate || typeof candidate !== "object") {
+        return [];
+      }
+
+      const item = candidate as Partial<RecentPlatformProjectState>;
+      if (!this.isPlatformId(item.platformId) || typeof item.folder !== "string" || item.folder.trim().length === 0) {
+        return [];
+      }
+
+      return [{
+        platformId: item.platformId,
+        name: typeof item.name === "string" && item.name.trim().length > 0 ? item.name : path.basename(item.folder),
+        folder: item.folder,
+        lastOpened: typeof item.lastOpened === "number" ? item.lastOpened : 0,
+        boardTarget: typeof item.boardTarget === "string" ? item.boardTarget : undefined,
+        port: typeof item.port === "string" ? item.port : undefined,
+      }];
+    }).sort((left, right) => right.lastOpened - left.lastOpened);
+  }
+
+  private async rememberRecentPlatformProject(
+    platformId: PlatformId,
+    folder: string,
+    options: { boardTarget?: string; port?: string } = {},
+  ): Promise<void> {
+    const normalizedFolder = path.resolve(folder);
+    const current = this.readRecentPlatformProjects();
+    const previous = current.find((project) => path.resolve(project.folder) === normalizedFolder);
+    const remaining = current.filter((project) => path.resolve(project.folder) !== normalizedFolder);
+    const entry: RecentPlatformProjectState = {
+      platformId,
+      name: path.basename(normalizedFolder),
+      folder: normalizedFolder,
+      lastOpened: Date.now(),
+      boardTarget: options.boardTarget?.trim() || previous?.boardTarget,
+      port: options.port?.trim() || previous?.port,
+    };
+
+    await this.context.globalState.update(RECENT_PLATFORM_PROJECTS_KEY, [entry, ...remaining].slice(0, 6));
+  }
+
+  private async removeRecentPlatformProject(folder: string): Promise<void> {
+    const normalizedFolder = path.resolve(folder);
+    const remaining = this.readRecentPlatformProjects()
+      .filter((project) => path.resolve(project.folder) !== normalizedFolder);
+    await this.context.globalState.update(RECENT_PLATFORM_PROJECTS_KEY, remaining);
+  }
+
+  private async applyPlatformSetup(platformId: PlatformId, boardTarget?: string, port?: string): Promise<void> {
+    const target = boardTarget?.trim();
+    if (target) {
+      if (platformId === "arduino") {
+        await this.context.workspaceState.update(SELECTED_ARDUINO_FQBN_KEY, target);
+      } else if (platformId === "espidf") {
+        await this.context.workspaceState.update(SELECTED_ESP_IDF_TARGET_KEY, target);
+      } else if (platformId === "stm") {
+        await this.context.workspaceState.update(SELECTED_STM_TARGET_KEY, target);
+      }
+    }
+
+    const selectedPort = port?.trim();
+    if (selectedPort) {
+      await this.persistSelectedPort(selectedPort);
+    }
+  }
+
+  private platformProjectStateKey(platformId: PlatformId): string {
+    const keys: Record<PlatformId, string> = {
+      micropython: SELECTED_MICROPYTHON_PROJECT_FOLDER_KEY,
+      arduino: SELECTED_ARDUINO_PROJECT_FOLDER_KEY,
+      espidf: SELECTED_ESP_IDF_PROJECT_FOLDER_KEY,
+      stm: SELECTED_STM_PROJECT_FOLDER_KEY,
+    };
+    return keys[platformId];
+  }
+
+  private platformLabel(platformId: PlatformId): string {
+    const labels: Record<PlatformId, string> = {
+      micropython: "MicroPython",
+      arduino: "Arduino",
+      espidf: "ESP-IDF",
+      stm: "STM",
+    };
+    return labels[platformId];
+  }
+
+  private defaultProjectName(platformId: PlatformId): string {
+    const names: Record<PlatformId, string> = {
+      micropython: "micropython_app",
+      arduino: "arduino_sketch",
+      espidf: "esp_idf_app",
+      stm: "stm_baremetal_app",
+    };
+    return names[platformId];
+  }
+
+  private platformTemplateFolder(platformId: PlatformId): string {
+    const folders: Record<PlatformId, string> = {
+      micropython: "templates/micropython/basic_app",
+      arduino: "templates/arduino/basic_sketch",
+      espidf: "templates/esp-idf/basic_app",
+      stm: "templates/stm/baremetal_app",
+    };
+    return path.join(this.context.extensionPath, folders[platformId]);
+  }
+
+  private async addFolderToWorkspace(folder: string): Promise<void> {
+    const current = vscode.workspace.workspaceFolders ?? [];
+    if (current.some((workspaceFolder) => path.resolve(workspaceFolder.uri.fsPath) === path.resolve(folder))) {
+      return;
+    }
+    vscode.workspace.updateWorkspaceFolders(current.length, 0, { uri: vscode.Uri.file(folder) });
+  }
+
+  private async pathExists(candidate: string): Promise<boolean> {
+    try {
+      await fs.promises.access(candidate);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async selectArduinoProjectFolderCommand(): Promise<void> {
+    const folder = await this.pickToolchainProjectFolder("Arduino: Select Project Folder", "Use Arduino Project");
+    if (!folder) {
+      return;
+    }
+
+    await this.context.workspaceState.update(SELECTED_ARDUINO_PROJECT_FOLDER_KEY, folder);
+    await this.rememberRecentPlatformProject("arduino", folder);
+    this.platformLauncherViewProvider.refresh();
+    void vscode.window.showInformationMessage(`Arduino project selected: ${folder}`);
+  }
+
+  private async arduinoToolchainStatusCommand(): Promise<void> {
+    await this.executeToolchainOperation(
+      "Arduino: Checking toolchain status",
+      this.arduinoOutput,
+      () => this.backend.arduinoToolchainStatus(),
+    );
+  }
+
+  private async arduinoInstallCoreCommand(): Promise<void> {
+    const corePackage = await this.pickArduinoCorePackage();
+    if (!corePackage) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      `Arduino: Installing ${corePackage}`,
+      this.arduinoOutput,
+      () => this.backend.arduinoInstallCore(corePackage),
+    );
+  }
+
+  private async selectArduinoBoardCommand(): Promise<void> {
+    const fqbn = await this.pickArduinoFqbn();
+    if (!fqbn) {
+      return;
+    }
+
+    await this.context.workspaceState.update(SELECTED_ARDUINO_FQBN_KEY, fqbn);
+    void vscode.window.showInformationMessage(`Arduino board selected: ${fqbn}`);
+  }
+
+  private async arduinoCompileCommand(): Promise<void> {
+    const projectFolder = await this.resolveArduinoProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const fqbn = await this.resolveArduinoFqbn();
+    if (!fqbn) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "Arduino: Compiling project",
+      this.arduinoOutput,
+      () => this.backend.arduinoCompile(projectFolder, fqbn),
+    );
+  }
+
+  private async arduinoUploadCommand(): Promise<void> {
+    const projectFolder = await this.resolveArduinoProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const fqbn = await this.resolveArduinoFqbn();
+    if (!fqbn) {
+      return;
+    }
+    const port = await this.resolveArduinoPort("Arduino: Upload Port");
+    if (!port) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "Arduino: Uploading project",
+      this.arduinoOutput,
+      () => this.backend.arduinoUpload(projectFolder, fqbn, port),
+    );
+  }
+
+  private async arduinoCompileAndUploadCommand(): Promise<void> {
+    const projectFolder = await this.resolveArduinoProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const fqbn = await this.resolveArduinoFqbn();
+    if (!fqbn) {
+      return;
+    }
+    const port = await this.resolveArduinoPort("Arduino: Compile and Upload Port");
+    if (!port) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "Arduino: Compiling and uploading project",
+      this.arduinoOutput,
+      () => this.backend.arduinoCompileAndUpload(projectFolder, fqbn, port),
+    );
+  }
+
+  private async selectEspIdfProjectFolderCommand(): Promise<void> {
+    const folder = await this.pickToolchainProjectFolder("ESP-IDF: Select Project Folder", "Use ESP-IDF Project");
+    if (!folder) {
+      return;
+    }
+
+    await this.context.workspaceState.update(SELECTED_ESP_IDF_PROJECT_FOLDER_KEY, folder);
+    await this.rememberRecentPlatformProject("espidf", folder);
+    this.platformLauncherViewProvider.refresh();
+    void vscode.window.showInformationMessage(`ESP-IDF project selected: ${folder}`);
+  }
+
+  private async espIdfStatusCommand(): Promise<void> {
+    await this.executeToolchainOperation(
+      "ESP-IDF: Checking toolchain status",
+      this.espIdfOutput,
+      () => this.backend.espIdfStatus(),
+    );
+  }
+
+  private async espIdfSetTargetCommand(): Promise<void> {
+    const projectFolder = await this.resolveEspIdfProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const target = await this.resolveEspIdfTarget();
+    if (!target) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      `ESP-IDF: Setting target ${target}`,
+      this.espIdfOutput,
+      () => this.backend.espIdfSetTarget(projectFolder, target),
+    );
+  }
+
+  private async espIdfBuildCommand(): Promise<void> {
+    const projectFolder = await this.resolveEspIdfProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "ESP-IDF: Building project",
+      this.espIdfOutput,
+      () => this.backend.espIdfBuild(projectFolder),
+    );
+  }
+
+  private async espIdfFlashCommand(): Promise<void> {
+    const projectFolder = await this.resolveEspIdfProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const port = await this.promptSerialPort("ESP-IDF: Flash Port");
+    if (!port) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "ESP-IDF: Flashing project",
+      this.espIdfOutput,
+      () => this.backend.espIdfFlash(projectFolder, port),
+    );
+  }
+
+  private async espIdfBuildAndFlashCommand(): Promise<void> {
+    const projectFolder = await this.resolveEspIdfProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const target = await this.resolveEspIdfTarget();
+    if (!target) {
+      return;
+    }
+    const port = await this.promptSerialPort("ESP-IDF: Build and Flash Port");
+    if (!port) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "ESP-IDF: Building and flashing project",
+      this.espIdfOutput,
+      () => this.backend.espIdfBuildAndFlash(projectFolder, port, { target }),
+    );
+  }
+
+  private async stmStlinkStatusCommand(): Promise<void> {
+    await this.executeToolchainOperation(
+      "STM: Checking ST-Link status",
+      this.stmOutput,
+      () => this.backend.stmStlinkStatus(),
+    );
+  }
+
+  private async stmBuildFirmwareCommand(): Promise<void> {
+    const projectFolder = await this.resolveStmProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const target = await this.resolveStmTarget();
+    if (!target) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "STM: Building firmware",
+      this.stmOutput,
+      () => this.backend.stmBuildFirmware(projectFolder, { target }),
+    );
+  }
+
+  private async stmFlashFirmwareCommand(): Promise<void> {
+    const target = await this.resolveStmTarget();
+    if (!target) {
+      return;
+    }
+    const firmware = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      openLabel: "Flash Firmware",
+      title: "STM: Select Firmware",
+      filters: {
+        Firmware: ["bin", "hex", "elf"],
+      },
+      defaultUri: this.getDefaultLocalFolderUri(),
+    });
+    if (!firmware || firmware.length === 0) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "STM: Flashing firmware",
+      this.stmOutput,
+      () => this.backend.stmStlinkFlash(target, firmware[0].fsPath),
+    );
+  }
+
+  private async stmBuildAndFlashCommand(): Promise<void> {
+    const projectFolder = await this.resolveStmProjectFolder();
+    if (!projectFolder) {
+      return;
+    }
+    const target = await this.resolveStmTarget();
+    if (!target) {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "STM: Building and flashing firmware",
+      this.stmOutput,
+      () => this.backend.stmBuildAndFlash(projectFolder, { target }),
+    );
+  }
+
+  private async stmEraseChipCommand(): Promise<void> {
+    const target = await this.resolveStmTarget();
+    if (!target) {
+      return;
+    }
+    const confirmation = await vscode.window.showWarningMessage(
+      `Erase STM target ${target}?`,
+      { modal: true },
+      "Erase",
+    );
+    if (confirmation !== "Erase") {
+      return;
+    }
+
+    await this.executeToolchainOperation(
+      "STM: Erasing chip",
+      this.stmOutput,
+      () => this.backend.stmStlinkErase(target),
+    );
+  }
+
+  private async resolveArduinoProjectFolder(): Promise<string | undefined> {
+    return this.resolveToolchainProjectFolder(
+      SELECTED_ARDUINO_PROJECT_FOLDER_KEY,
+      "Arduino: Select Project Folder",
+      "Use Arduino Project",
+    );
+  }
+
+  private async resolveEspIdfProjectFolder(): Promise<string | undefined> {
+    return this.resolveToolchainProjectFolder(
+      SELECTED_ESP_IDF_PROJECT_FOLDER_KEY,
+      "ESP-IDF: Select Project Folder",
+      "Use ESP-IDF Project",
+    );
+  }
+
+  private async resolveStmProjectFolder(): Promise<string | undefined> {
+    return this.resolveToolchainProjectFolder(
+      SELECTED_STM_PROJECT_FOLDER_KEY,
+      "STM: Select Project Folder",
+      "Use STM Project",
+    );
+  }
+
+  private async resolveToolchainProjectFolder(
+    stateKey: string,
+    title: string,
+    openLabel: string,
+  ): Promise<string | undefined> {
+    const stored = this.context.workspaceState.get<string>(stateKey);
+    if (stored && await this.isDirectoryPath(stored)) {
+      return stored;
+    }
+
+    if (stored) {
+      void vscode.window.showWarningMessage(`Saved project folder no longer exists: ${stored}`);
+      await this.context.workspaceState.update(stateKey, undefined);
+    }
+
+    const folder = await this.pickToolchainProjectFolder(title, openLabel);
+    if (!folder) {
+      return undefined;
+    }
+
+    await this.context.workspaceState.update(stateKey, folder);
+    return folder;
+  }
+
+  private async pickToolchainProjectFolder(title: string, openLabel: string): Promise<string | undefined> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel,
+      title,
+      defaultUri: this.getDefaultLocalFolderUri(),
+    });
+    if (!picked || picked.length === 0) {
+      return undefined;
+    }
+
+    return picked[0].fsPath;
+  }
+
+  private async resolveArduinoFqbn(): Promise<string | undefined> {
+    const stored = this.context.workspaceState.get<string>(SELECTED_ARDUINO_FQBN_KEY);
+    if (stored) {
+      return stored;
+    }
+
+    const value = await this.pickArduinoFqbn();
+    if (!value) {
+      return undefined;
+    }
+
+    await this.context.workspaceState.update(SELECTED_ARDUINO_FQBN_KEY, value);
+    return value;
+  }
+
+  private async resolveArduinoPort(title: string): Promise<string | undefined> {
+    if (this.selectedPort) {
+      return this.selectedPort;
+    }
+
+    const port = await this.promptArduinoPort(title);
+    if (!port) {
+      return undefined;
+    }
+
+    await this.persistSelectedPort(port);
+    return port;
+  }
+
+  private async pickArduinoFqbn(): Promise<string | undefined> {
+    const current = this.context.workspaceState.get<string>(SELECTED_ARDUINO_FQBN_KEY) ?? "arduino:avr:uno";
+    const picks = [
+      { label: "Arduino Uno", description: "arduino:avr:uno", fqbn: "arduino:avr:uno" },
+      { label: "Arduino Nano", description: "arduino:avr:nano", fqbn: "arduino:avr:nano" },
+      { label: "Arduino Mega 2560", description: "arduino:avr:mega", fqbn: "arduino:avr:mega" },
+      { label: "Arduino Leonardo", description: "arduino:avr:leonardo", fqbn: "arduino:avr:leonardo" },
+      { label: "Arduino Micro", description: "arduino:avr:micro", fqbn: "arduino:avr:micro" },
+      { label: "Arduino Pro Mini", description: "arduino:avr:pro", fqbn: "arduino:avr:pro" },
+      { label: "Enter FQBN manually", description: current, fqbn: "__manual__" },
+    ];
+    const choice = await vscode.window.showQuickPick(picks, {
+      title: "Arduino: Select Board",
+      placeHolder: "Search board name or FQBN",
+      matchOnDescription: true,
+      ignoreFocusOut: true,
+    });
+    if (!choice) {
+      return undefined;
+    }
+    if (choice.fqbn !== "__manual__") {
+      return choice.fqbn;
+    }
+    return this.promptRememberedValue(
+      "Arduino: Board FQBN",
+      "Enter board FQBN, for example arduino:avr:uno",
+      current,
+    );
+  }
+
+  private async pickArduinoCorePackage(): Promise<string | undefined> {
+    const picks = [
+      { label: "Arduino AVR Boards", description: "arduino:avr", corePackage: "arduino:avr" },
+      { label: "Arduino SAMD Boards", description: "arduino:samd", corePackage: "arduino:samd" },
+      { label: "Enter core package manually", description: "vendor:architecture", corePackage: "__manual__" },
+    ];
+    const choice = await vscode.window.showQuickPick(picks, {
+      title: "Arduino: Install Core",
+      placeHolder: "Choose the board core package to install",
+      ignoreFocusOut: true,
+    });
+    if (!choice) {
+      return undefined;
+    }
+    if (choice.corePackage !== "__manual__") {
+      return choice.corePackage;
+    }
+    return this.promptRememberedValue("Arduino: Install Core", "Arduino core package", "arduino:avr");
+  }
+
+  private async promptArduinoPort(title: string): Promise<string | undefined> {
+    const scan = this.backendReady ? await this.backend.scan() : undefined;
+    const devices = scan?.devices ?? [];
+    const picks = devices.map((device) => ({
+      label: device.port,
+      description: this.formatDeviceName(device),
+      detail: this.formatDevicePickerDetail(device),
+      port: device.port,
+    }));
+    picks.push({
+      label: "Enter port manually",
+      description: this.selectedPort ?? "/dev/ttyUSB0",
+      detail: "Use this when the board is not detected automatically.",
+      port: "__manual__",
+    });
+
+    const choice = await vscode.window.showQuickPick(picks, {
+      title,
+      placeHolder: "Choose the serial port used by Arduino upload",
+      ignoreFocusOut: true,
+    });
+    if (!choice) {
+      return undefined;
+    }
+    if (choice.port !== "__manual__") {
+      return choice.port;
+    }
+    return this.promptSerialPort(title);
+  }
+
+  private async resolveEspIdfTarget(): Promise<string | undefined> {
+    const value = await this.promptRememberedValue(
+      "ESP-IDF: Target",
+      "Enter ESP-IDF target, for example esp32, esp32s3, or esp32c3",
+      this.context.workspaceState.get<string>(SELECTED_ESP_IDF_TARGET_KEY) ?? "esp32",
+    );
+    if (!value) {
+      return undefined;
+    }
+
+    await this.context.workspaceState.update(SELECTED_ESP_IDF_TARGET_KEY, value);
+    return value;
+  }
+
+  private async resolveStmTarget(): Promise<string | undefined> {
+    const value = await this.promptRememberedValue(
+      "STM: Target",
+      "Enter STM target, for example stm32f0, stm32f1, or stm32f4",
+      this.context.workspaceState.get<string>(SELECTED_STM_TARGET_KEY) ?? "stm32f0",
+    );
+    if (!value) {
+      return undefined;
+    }
+
+    await this.context.workspaceState.update(SELECTED_STM_TARGET_KEY, value);
+    return value;
+  }
+
+  private async promptSerialPort(title: string): Promise<string | undefined> {
+    const value = await vscode.window.showInputBox({
+      title,
+      prompt: "Enter serial port",
+      value: this.selectedPort,
+      placeHolder: "/dev/ttyUSB0",
+      ignoreFocusOut: true,
+      validateInput: (input) => input.trim().length > 0 ? undefined : "Serial port is required.",
+    });
+    return value?.trim() || undefined;
+  }
+
+  private async promptRememberedValue(title: string, prompt: string, value: string): Promise<string | undefined> {
+    const input = await vscode.window.showInputBox({
+      title,
+      prompt,
+      value,
+      ignoreFocusOut: true,
+      validateInput: (candidate) => candidate.trim().length > 0 ? undefined : "Value is required.",
+    });
+    return input?.trim() || undefined;
+  }
+
+  private async executeToolchainOperation(
+    title: string,
+    output: vscode.OutputChannel,
+    task: () => Promise<ToolchainCommandResult>,
+  ): Promise<ToolchainCommandResult | undefined> {
+    if (!this.backendReady) {
+      void vscode.window.showErrorMessage("Backend is still initializing.");
+      return undefined;
+    }
+    if (this.operationInFlight > 0) {
+      void vscode.window.showWarningMessage("Another operation is already running.");
+      return undefined;
+    }
+
+    let result: ToolchainCommandResult;
+    try {
+      this.operationInFlight += 1;
+      this.refreshStatus();
+      result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title,
+          cancellable: false,
+        },
+        async (progress) => {
+          output.clear();
+          output.appendLine(title);
+          output.appendLine("");
+          output.show(false);
+          progress.report({ message: "Running..." });
+          return task();
+        },
+      );
+    } catch (error) {
+      void vscode.window.showErrorMessage(this.errorMessage(error, `${title} failed.`));
+      return undefined;
+    } finally {
+      this.operationInFlight = Math.max(0, this.operationInFlight - 1);
+      this.refreshStatus();
+    }
+
+    this.appendToolchainResult(output, result);
+    output.show(false);
+    if (!result.ok) {
+      const detail = result.error ? ` ${result.error}` : "";
+      void vscode.window.showErrorMessage(`${title} failed.${detail}`);
+      return result;
+    }
+
+    void vscode.window.showInformationMessage(`${title} complete.`);
+    return result;
+  }
+
+  private appendToolchainResult(output: vscode.OutputChannel, result: ToolchainCommandResult): void {
+    if (Array.isArray(result.command)) {
+      output.appendLine(`Command: ${result.command.join(" ")}`);
+    }
+    if (typeof result.returnCode === "number") {
+      output.appendLine(`Return code: ${result.returnCode}`);
+    }
+    if (typeof result.stdout === "string" && result.stdout.length > 0) {
+      output.appendLine("");
+      output.appendLine("stdout:");
+      output.appendLine(result.stdout);
+    }
+    if (typeof result.stderr === "string" && result.stderr.length > 0) {
+      output.appendLine("");
+      output.appendLine("stderr:");
+      output.appendLine(result.stderr);
+    }
+    if (result.error) {
+      output.appendLine("");
+      output.appendLine(`Error: ${result.error}`);
+    }
+    output.appendLine("");
+    output.appendLine("Result:");
+    output.appendLine(JSON.stringify(result, null, 2));
   }
 
   public dispose(): void {

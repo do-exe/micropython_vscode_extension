@@ -30,6 +30,7 @@ import {
   type WorkspaceSyncResult,
   type WorkspaceTreeResult,
   type WorkspaceWriteFileResult,
+  type ToolchainCommandResult,
 } from "../../../core/types";
 import {
   BACKEND_ROOT_RELATIVE_DIR,
@@ -353,6 +354,182 @@ export class BackendServiceClient implements vscode.Disposable {
 
   public async syncWorkspaceFileSystem(port: string): Promise<WorkspaceSyncResult> {
     return this.request<WorkspaceSyncResult>("workspace.sync", { port });
+  }
+
+  public async arduinoToolchainStatus(toolchainPath?: string): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.status", { toolchainPath });
+  }
+
+  public async arduinoInstallCore(
+    corePackage: string,
+    options: { toolchainPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.install-core", {
+      package: corePackage,
+      toolchainPath: options.toolchainPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async arduinoCompile(
+    projectFolder: string,
+    fqbn: string,
+    options: { toolchainPath?: string; outputDir?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.compile", {
+      projectFolder,
+      fqbn,
+      toolchainPath: options.toolchainPath,
+      outputDir: options.outputDir,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async arduinoUpload(
+    projectFolder: string,
+    fqbn: string,
+    port: string,
+    options: { toolchainPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.upload", {
+      projectFolder,
+      fqbn,
+      port,
+      toolchainPath: options.toolchainPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async arduinoCompileAndUpload(
+    projectFolder: string,
+    fqbn: string,
+    port: string,
+    options: { toolchainPath?: string; outputDir?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.compile-and-upload", {
+      projectFolder,
+      fqbn,
+      port,
+      toolchainPath: options.toolchainPath,
+      outputDir: options.outputDir,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async espIdfStatus(idfPath?: string, toolsPath?: string): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("esp-idf.status", { idfPath, toolsPath });
+  }
+
+  public async espIdfSetTarget(
+    projectFolder: string,
+    target: string,
+    options: { idfPath?: string; toolsPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("esp-idf.set-target", {
+      projectFolder,
+      target,
+      idfPath: options.idfPath,
+      toolsPath: options.toolsPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async espIdfBuild(
+    projectFolder: string,
+    options: { idfPath?: string; toolsPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("esp-idf.build", {
+      projectFolder,
+      idfPath: options.idfPath,
+      toolsPath: options.toolsPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async espIdfFlash(
+    projectFolder: string,
+    port: string,
+    options: { idfPath?: string; toolsPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("esp-idf.flash", {
+      projectFolder,
+      port,
+      idfPath: options.idfPath,
+      toolsPath: options.toolsPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async espIdfBuildAndFlash(
+    projectFolder: string,
+    port: string,
+    options: { target?: string; idfPath?: string; toolsPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("esp-idf.build-and-flash", {
+      projectFolder,
+      port,
+      target: options.target,
+      idfPath: options.idfPath,
+      toolsPath: options.toolsPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async stmStlinkStatus(timeoutSeconds?: number): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("stm.stlink-status", { timeoutSeconds });
+  }
+
+  public async stmStlinkErase(target: string, options: { interface?: string; timeoutSeconds?: number } = {}): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("stm.stlink-erase", {
+      target,
+      interface: options.interface,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async stmStlinkFlash(
+    target: string,
+    firmwarePath: string,
+    options: { verify?: boolean; reset?: boolean; interface?: string; address?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("stm.stlink-flash", {
+      target,
+      firmwarePath,
+      verify: options.verify,
+      reset: options.reset,
+      interface: options.interface,
+      address: options.address,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async stmBuildFirmware(
+    projectFolder: string,
+    options: { target?: string; outputDir?: string; toolchainPath?: string; clean?: boolean; optimization?: string } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("stm.build-firmware", {
+      projectFolder,
+      target: options.target,
+      outputDir: options.outputDir,
+      toolchainPath: options.toolchainPath,
+      clean: options.clean,
+      optimization: options.optimization,
+    });
+  }
+
+  public async stmBuildAndFlash(
+    projectFolder: string,
+    options: { target?: string; outputDir?: string; toolchainPath?: string; verify?: boolean; reset?: boolean; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("stm.build-and-flash", {
+      projectFolder,
+      target: options.target,
+      outputDir: options.outputDir,
+      toolchainPath: options.toolchainPath,
+      verify: options.verify,
+      reset: options.reset,
+      timeoutSeconds: options.timeoutSeconds,
+    });
   }
 
   private async request<T>(

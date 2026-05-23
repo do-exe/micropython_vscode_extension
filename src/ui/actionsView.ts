@@ -29,6 +29,12 @@ class MicroPythonActionItem extends vscode.TreeItem {
 
 const ACTIONS: readonly MicroPythonActionDefinition[] = [
   {
+    id: "chooseFramework",
+    label: "Choose Framework",
+    command: "micropython.showPlatformLauncher",
+    icon: "arrow-left",
+  },
+  {
     id: "selectDevice",
     label: "Select Device",
     command: "micropython.selectDevice",

@@ -10,6 +10,10 @@ from typing import Any
 from .constants import COMMAND_PRIORITY, DEFAULT_RUN_TIMEOUT_SEC, EVENT_SESSION, EVENT_TERMINAL_OUTPUT
 from .session import PersistentSession
 from .sync_utils import list_detected_esp_ports
+from . import arduino
+from . import esp_idf
+from . import stlink
+from . import stm_build
 
 _service_write_lock = threading.Lock()
 
@@ -252,6 +256,113 @@ class JobDispatcher:
                             {"id": req_id, "type": "stream", "stream": "stdout", "line": line}
                         )
                     ) if job.stream else None,
+                )
+            if job.command == "arduino.status":
+                return arduino.status(toolchain_path=_optional_arg_string(args, "toolchainPath"))
+            if job.command == "arduino.install-core":
+                return arduino.install_core(
+                    str(args["package"]),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 600.0)),
+                )
+            if job.command == "arduino.compile":
+                return arduino.compile_project(
+                    project_folder=str(args["projectFolder"]),
+                    fqbn=str(args["fqbn"]),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    output_dir=_optional_arg_string(args, "outputDir"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 600.0)),
+                )
+            if job.command == "arduino.upload":
+                return arduino.upload_project(
+                    project_folder=str(args["projectFolder"]),
+                    fqbn=str(args["fqbn"]),
+                    port=str(args["port"]),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 600.0)),
+                )
+            if job.command == "arduino.compile-and-upload":
+                return arduino.compile_and_upload(
+                    project_folder=str(args["projectFolder"]),
+                    fqbn=str(args["fqbn"]),
+                    port=str(args["port"]),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    output_dir=_optional_arg_string(args, "outputDir"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 600.0)),
+                )
+            if job.command == "esp-idf.status":
+                return esp_idf.status(
+                    idf_path=_optional_arg_string(args, "idfPath"),
+                    tools_path=_optional_arg_string(args, "toolsPath"),
+                )
+            if job.command == "esp-idf.set-target":
+                return esp_idf.set_target(
+                    str(args["projectFolder"]),
+                    str(args.get("target") or "esp32"),
+                    idf_path=_optional_arg_string(args, "idfPath"),
+                    tools_path=_optional_arg_string(args, "toolsPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 900.0)),
+                )
+            if job.command == "esp-idf.build":
+                return esp_idf.build(
+                    str(args["projectFolder"]),
+                    idf_path=_optional_arg_string(args, "idfPath"),
+                    tools_path=_optional_arg_string(args, "toolsPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 900.0)),
+                )
+            if job.command == "esp-idf.flash":
+                return esp_idf.flash(
+                    str(args["projectFolder"]),
+                    str(args["port"]),
+                    idf_path=_optional_arg_string(args, "idfPath"),
+                    tools_path=_optional_arg_string(args, "toolsPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 900.0)),
+                )
+            if job.command == "esp-idf.build-and-flash":
+                return esp_idf.build_and_flash(
+                    str(args["projectFolder"]),
+                    str(args["port"]),
+                    target=_optional_arg_string(args, "target"),
+                    idf_path=_optional_arg_string(args, "idfPath"),
+                    tools_path=_optional_arg_string(args, "toolsPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 900.0)),
+                )
+            if job.command == "stm.stlink-status":
+                return stlink.stlink_status(timeout_seconds=float(args.get("timeoutSeconds", 10.0)))
+            if job.command == "stm.stlink-erase":
+                return stlink.erase_chip(
+                    str(args["target"]),
+                    timeout_seconds=float(args.get("timeoutSeconds", 60.0)),
+                    interface=str(args.get("interface") or stlink.DEFAULT_INTERFACE_CONFIG),
+                )
+            if job.command == "stm.stlink-flash":
+                return stlink.flash_firmware(
+                    target=str(args["target"]),
+                    firmware_path=str(args["firmwarePath"]),
+                    verify=bool(args.get("verify", True)),
+                    reset=bool(args.get("reset", True)),
+                    timeout_seconds=float(args.get("timeoutSeconds", 120.0)),
+                    interface=str(args.get("interface") or stlink.DEFAULT_INTERFACE_CONFIG),
+                    address=str(args.get("address") or stlink.DEFAULT_FLASH_ADDRESS),
+                )
+            if job.command == "stm.build-firmware":
+                return stm_build.build_firmware(
+                    str(args["projectFolder"]),
+                    target=str(args.get("target") or "stm32f0"),
+                    output_dir=_optional_arg_string(args, "outputDir"),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    clean=bool(args.get("clean", True)),
+                    optimization=str(args.get("optimization") or "-Os"),
+                )
+            if job.command == "stm.build-and-flash":
+                return stm_build.build_and_flash(
+                    str(args["projectFolder"]),
+                    target=str(args.get("target") or "stm32f0"),
+                    output_dir=_optional_arg_string(args, "outputDir"),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    verify=bool(args.get("verify", True)),
+                    reset=bool(args.get("reset", True)),
+                    timeout_seconds=float(args.get("timeoutSeconds", 120.0)),
                 )
             return {"ok": False, "error": f"Unsupported command: {job.command}"}
         except Exception as exc:

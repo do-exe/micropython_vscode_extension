@@ -204,6 +204,16 @@ export type WorkspaceSyncResult = {
   error?: string;
 };
 
+export type ToolchainCommandResult = {
+  ok: boolean;
+  error?: string | null;
+  stdout?: string;
+  stderr?: string;
+  command?: string[];
+  returnCode?: number | null;
+  [key: string]: unknown;
+};
+
 export type SyncFolderSelection = {
   localFolder: string;
   remoteFolder: string;

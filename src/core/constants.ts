@@ -1,4 +1,13 @@
 export const SELECTED_PORT_KEY = "selectedPort";
+export const SELECTED_PLATFORM_KEY = "selectedPlatform";
+export const SELECTED_MICROPYTHON_PROJECT_FOLDER_KEY = "selectedMicroPythonProjectFolder";
+export const SELECTED_ARDUINO_PROJECT_FOLDER_KEY = "selectedArduinoProjectFolder";
+export const SELECTED_ARDUINO_FQBN_KEY = "selectedArduinoFqbn";
+export const SELECTED_ESP_IDF_PROJECT_FOLDER_KEY = "selectedEspIdfProjectFolder";
+export const SELECTED_ESP_IDF_TARGET_KEY = "selectedEspIdfTarget";
+export const SELECTED_STM_PROJECT_FOLDER_KEY = "selectedStmProjectFolder";
+export const SELECTED_STM_TARGET_KEY = "selectedStmTarget";
+export const RECENT_PLATFORM_PROJECTS_KEY = "recentPlatformProjects";
 export const SYNC_FOLDER_HISTORY_KEY = "syncFolderHistory";
 export const LINKED_SYNC_FOLDER_KEY = "linkedSyncFolder";
 export const POLL_INTERVAL_MS = 1000;

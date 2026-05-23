@@ -66,14 +66,65 @@
     "views": {
       "micropythonSidebar": [
         {
+          "id": "micropython.platformLauncherView",
+          "name": "Project Setup",
+          "type": "webview",
+          "when": "micropython.platform.launcherActive"
+        },
+        {
           "id": "micropython.actionsView",
           "name": "Actions",
-          "icon": "media/micropython.svg"
+          "icon": "media/micropython.svg",
+          "when": "micropython.platform.micropythonProjectActive"
         },
         {
           "id": "micropython.workspaceView",
           "name": "MicroPython Workspace",
-          "icon": "media/new-folder.svg"
+          "icon": "media/new-folder.svg",
+          "when": "micropython.platform.micropythonProjectActive",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "micropython.micropythonProjectView",
+          "name": "MicroPython",
+          "type": "webview",
+          "when": "micropython.platform.micropythonProjectPickerActive"
+        },
+        {
+          "id": "micropython.arduinoProjectView",
+          "name": "Arduino",
+          "type": "webview",
+          "when": "micropython.platform.arduinoProjectPickerActive"
+        },
+        {
+          "id": "micropython.arduinoView",
+          "name": "Arduino",
+          "icon": "media/chip.svg",
+          "when": "micropython.platform.arduinoProjectActive"
+        },
+        {
+          "id": "micropython.espIdfProjectView",
+          "name": "ESP-IDF",
+          "type": "webview",
+          "when": "micropython.platform.espIdfProjectPickerActive"
+        },
+        {
+          "id": "micropython.espIdfView",
+          "name": "ESP-IDF",
+          "icon": "media/chip.svg",
+          "when": "micropython.platform.espIdfProjectActive"
+        },
+        {
+          "id": "micropython.stmProjectView",
+          "name": "STM",
+          "type": "webview",
+          "when": "micropython.platform.stmProjectPickerActive"
+        },
+        {
+          "id": "micropython.stmView",
+          "name": "STM",
+          "icon": "media/chip.svg",
+          "when": "micropython.platform.stmProjectActive"
         }
       ]
     },
@@ -314,6 +365,96 @@
         "command": "micropython.ai.softReset",
         "title": "MicroPython: AI Soft Reset",
         "category": "MicroPython AI"
+      },
+      {
+        "command": "micropython.showPlatformLauncher",
+        "title": "Choose Framework",
+        "category": "MicroPython"
+      },
+      {
+        "command": "micropython.arduino.toolchainStatus",
+        "title": "Arduino: Toolchain Status",
+        "category": "Arduino"
+      },
+      {
+        "command": "micropython.arduino.installCore",
+        "title": "Arduino: Install Core",
+        "category": "Arduino"
+      },
+      {
+        "command": "micropython.arduino.selectProjectFolder",
+        "title": "Arduino: Select Project",
+        "category": "Arduino"
+      },
+      {
+        "command": "micropython.arduino.selectBoard",
+        "title": "Arduino: Select Board",
+        "category": "Arduino"
+      },
+      {
+        "command": "micropython.arduino.compile",
+        "title": "Arduino: Compile",
+        "category": "Arduino"
+      },
+      {
+        "command": "micropython.arduino.upload",
+        "title": "Arduino: Upload",
+        "category": "Arduino"
+      },
+      {
+        "command": "micropython.arduino.compileAndUpload",
+        "title": "Arduino: Compile and Upload",
+        "category": "Arduino"
+      },
+      {
+        "command": "micropython.espIdf.status",
+        "title": "ESP-IDF: Toolchain Status",
+        "category": "ESP-IDF"
+      },
+      {
+        "command": "micropython.espIdf.setTarget",
+        "title": "ESP-IDF: Set Target",
+        "category": "ESP-IDF"
+      },
+      {
+        "command": "micropython.espIdf.build",
+        "title": "ESP-IDF: Build",
+        "category": "ESP-IDF"
+      },
+      {
+        "command": "micropython.espIdf.flash",
+        "title": "ESP-IDF: Flash",
+        "category": "ESP-IDF"
+      },
+      {
+        "command": "micropython.espIdf.buildAndFlash",
+        "title": "ESP-IDF: Build and Flash",
+        "category": "ESP-IDF"
+      },
+      {
+        "command": "micropython.stm.stlinkStatus",
+        "title": "STM: ST-Link Status",
+        "category": "STM"
+      },
+      {
+        "command": "micropython.stm.buildFirmware",
+        "title": "STM: Build Firmware",
+        "category": "STM"
+      },
+      {
+        "command": "micropython.stm.flashFirmware",
+        "title": "STM: Flash Firmware",
+        "category": "STM"
+      },
+      {
+        "command": "micropython.stm.buildAndFlash",
+        "title": "STM: Build and Flash",
+        "category": "STM"
+      },
+      {
+        "command": "micropython.stm.eraseChip",
+        "title": "STM: Erase Chip",
+        "category": "STM"
       }
     ],
     "languageModelTools": [
