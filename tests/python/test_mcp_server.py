@@ -133,6 +133,11 @@ class McpServerPortReleaseTests(unittest.TestCase):
 
         names = {tool["name"] for tool in server._tools()}
 
+        self.assertIn("stm_stlink_status", names)
+        self.assertIn("stm_stlink_flash", names)
+        self.assertIn("stm_stlink_erase", names)
+        self.assertIn("stm_build_firmware", names)
+        self.assertIn("stm_build_and_flash", names)
         self.assertIn("driver_xai_search", names)
         self.assertIn("driver_xai_prepare_bundle", names)
         self.assertIn("driver_xai_deploy_bundle", names)

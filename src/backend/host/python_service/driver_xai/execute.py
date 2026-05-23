@@ -51,6 +51,12 @@ def execute_module(
             "problems": plan["problems"],
             "hardwareFlow": plan["hardwareFlow"],
             "aiContext": plan["aiContext"],
+            "resolvedSetup": plan["resolvedSetup"],
+            "error": {
+                "code": "invalid_setup_value" if any(problem.get("code") != "missing_setup_value" for problem in plan["problems"]) else "missing_setup_value",
+                "message": "Driver xAI setup validation failed.",
+                "details": {"problems": plan["problems"]},
+            },
         }
 
     temp_context = tempfile.TemporaryDirectory(prefix="driver_xai_execute_") if output_dir is None else None
@@ -87,7 +93,13 @@ def execute_module(
                 "progress": sync_progress[-80:],
                 "hardwareFlow": plan["hardwareFlow"],
                 "aiContext": plan["aiContext"],
+                "resolvedSetup": plan["resolvedSetup"],
                 "durationMs": int((time.monotonic() - started_at) * 1000),
+                "error": {
+                    "code": "transport_error",
+                    "message": str(sync_result.get("error") or "Driver xAI bundle sync failed."),
+                    "details": sync_result,
+                },
             }
 
         stdout_lines: list[str] = []
@@ -100,10 +112,22 @@ def execute_module(
             stderr_line_callback=stderr_lines.append,
         )
         parsed = parse_driver_xai_output(str(run_result.get("output", "")))
+        run_ok = bool(run_result.get("ok"))
+        parsed_ok = bool(parsed.get("ok", False))
+        execute_ok = run_ok and parsed_ok
+        error_payload = None if execute_ok else (
+            _normalize_error_payload(parsed.get("error"))
+            if run_ok
+            else {
+                "code": "transport_error",
+                "message": str(run_result.get("error") or "Driver xAI run step failed."),
+                "details": run_result,
+            }
+        )
 
         return {
-            "ok": bool(run_result.get("ok")) and parsed.get("ok", False),
-            "failedStep": None if bool(run_result.get("ok")) and parsed.get("ok", False) else "run",
+            "ok": execute_ok,
+            "failedStep": None if execute_ok else "run",
             "catalogRoot": str(catalog.root),
             "moduleId": module_id,
             "command": command,
@@ -119,7 +143,9 @@ def execute_module(
             "progress": sync_progress[-80:],
             "hardwareFlow": plan["hardwareFlow"],
             "aiContext": plan["aiContext"],
+            "resolvedSetup": plan["resolvedSetup"],
             "durationMs": int((time.monotonic() - started_at) * 1000),
+            "error": error_payload,
         }
     finally:
         if temp_context is not None:
@@ -247,6 +273,7 @@ def build_execute_source(
     hold_ms: int,
 ) -> str:
     imports = [
+        "import sys",
         "import time",
         "try:",
         "    import ujson as json",
@@ -267,14 +294,23 @@ def build_execute_source(
         f"    response = driver_xai.execute({module_id!r}, {command!r}, {_source_literal(command_parameters)})",
         "    if not response.get('ok'):",
         "        raise RuntimeError(response.get('error'))",
-        "    print('DRIVER_XAI_OK')",
-        "    print(json.dumps({'metadata': METADATA, 'result': response.get('result'), 'response': response}))",
+        "    time.sleep_ms(20)",
+        "    payload = json.dumps({'ok': True, 'metadata': METADATA, 'result': response.get('result'), 'response': response})",
+        "    sys.stdout.write('DRIVER_XAI_RESULT:' + payload + '\\n')",
+        "    try:",
+        "        sys.stdout.flush()",
+        "    except Exception:",
+        "        pass",
         f"    HOLD_MS = {max(0, int(hold_ms))}",
         "    if HOLD_MS:",
         "        time.sleep_ms(HOLD_MS)",
         "except Exception as exc:",
-        "    print('DRIVER_XAI_ERROR')",
-        "    print(json.dumps({'metadata': METADATA, 'error': repr(exc)}))",
+        "    time.sleep_ms(20)",
+        "    sys.stdout.write('DRIVER_XAI_ERROR:' + json.dumps({'ok': False, 'metadata': METADATA, 'error': repr(exc)}) + '\\n')",
+        "    try:",
+        "        sys.stdout.flush()",
+        "    except Exception:",
+        "        pass",
         "    raise",
         "",
     ])
@@ -342,33 +378,218 @@ def build_ai_context(
 def parse_driver_xai_output(output: str) -> dict[str, Any]:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     for index, text in enumerate(lines):
-        if text == "DRIVER_XAI_OK":
-            payload = json.loads(lines[index + 1]) if index + 1 < len(lines) else {}
+        if text.startswith("DRIVER_XAI_OK"):
+            inline_payload = text.removeprefix("DRIVER_XAI_OK").strip()
+            payload, error = (
+                _parse_recoverable_payload([inline_payload, *lines[index + 1 :]], marker="DRIVER_XAI_OK")
+                if inline_payload
+                else _parse_next_json_payload(lines, index + 1)
+            )
+            if error is not None:
+                return {"ok": False, "error": error}
             return {
                 "ok": True,
                 "result": payload.get("result"),
                 "metadata": payload.get("metadata"),
             }
-        if text == "DRIVER_XAI_ERROR":
-            payload = json.loads(lines[index + 1]) if index + 1 < len(lines) else {}
+        if text.startswith("DRIVER_XAI_ERROR"):
+            inline_payload = text.removeprefix("DRIVER_XAI_ERROR").lstrip(":").strip()
+            payload, error = (
+                _parse_recoverable_payload([inline_payload, *lines[index + 1 :]], marker="DRIVER_XAI_ERROR")
+                if inline_payload
+                else _parse_next_json_payload(lines, index + 1)
+            )
+            if error is not None:
+                return {"ok": False, "error": error}
             return {
                 "ok": False,
-                "error": payload,
+                "error": payload.get("error", payload),
             }
         if text.startswith("DRIVER_XAI_RESULT:"):
-            return json.loads(text.removeprefix("DRIVER_XAI_RESULT:"))
-        if text.startswith("DRIVER_XAI_ERROR:"):
-            payload = json.loads(text.removeprefix("DRIVER_XAI_ERROR:"))
+            payload, error = _parse_recoverable_payload(
+                [text.removeprefix("DRIVER_XAI_RESULT:"), *lines[index + 1 :]],
+                marker="DRIVER_XAI_RESULT",
+            )
+            if error is not None:
+                return {"ok": False, "error": error}
+            if isinstance(payload, dict):
+                return payload
             return {
                 "ok": False,
-                "error": payload,
+                "error": {
+                    "code": "parse_error",
+                    "message": "DRIVER_XAI_RESULT payload must be a JSON object.",
+                    "details": {"payloadType": type(payload).__name__},
+                },
             }
     return {
         "ok": False,
         "error": {
+            "code": "parse_error",
             "message": "Driver xAI result marker was not found in device output.",
-            "output": output,
+            "details": {"output": output},
         },
+    }
+
+
+def _parse_next_json_payload(lines: list[str], start_index: int) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if start_index >= len(lines):
+        return {}, {
+            "code": "parse_error",
+            "message": "Expected JSON payload line after Driver xAI marker.",
+            "details": {"lines": lines},
+        }
+    # Join progressive lines so wrapped JSON still parses.
+    combined = ""
+    last_decode_error = ""
+    for index in range(start_index, len(lines)):
+        combined = f"{combined}\n{lines[index]}".strip() if combined else lines[index]
+        payload, error = _parse_json_text(combined, marker="DRIVER_XAI_PAYLOAD")
+        if error is None:
+            if isinstance(payload, dict):
+                return payload, None
+            return {}, {
+                "code": "parse_error",
+                "message": "Driver xAI payload must be a JSON object.",
+                "details": {"payloadType": type(payload).__name__},
+            }
+        details = error.get("details") if isinstance(error, dict) else None
+        if isinstance(details, dict):
+            last_decode_error = str(details.get("decodeError", ""))
+    return {}, {
+        "code": "parse_error",
+        "message": "Could not parse Driver xAI JSON payload.",
+        "details": {
+            "raw": combined,
+            "decodeError": last_decode_error or None,
+        },
+    }
+
+
+def _parse_recoverable_payload(lines: list[str], *, marker: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    payload, error = _parse_payload_lines(lines, marker=marker)
+    if error is None:
+        return payload, None
+
+    raw = "\n".join(line for line in lines if line).strip()
+    response = _extract_json_object_after_key(raw, "response")
+    if isinstance(response, dict) and response.get("ok") is True:
+        return {
+            "ok": True,
+            "metadata": None,
+            "response": response,
+            "result": response.get("result"),
+        }, None
+
+    result = _extract_json_object_after_key(raw, "result")
+    if isinstance(result, dict):
+        return {
+            "ok": True,
+            "metadata": None,
+            "result": result,
+        }, None
+
+    return {}, error
+
+
+def _parse_payload_lines(lines: list[str], *, marker: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    combined = ""
+    last_decode_error = ""
+    for line in lines:
+        if not line:
+            continue
+        combined = f"{combined}\n{line}".strip() if combined else line
+        payload, error = _parse_json_text(combined, marker=marker)
+        if error is None:
+            if isinstance(payload, dict):
+                return payload, None
+            return {}, {
+                "code": "parse_error",
+                "message": "Driver xAI payload must be a JSON object.",
+                "details": {"payloadType": type(payload).__name__},
+            }
+        details = error.get("details") if isinstance(error, dict) else None
+        if isinstance(details, dict):
+            last_decode_error = str(details.get("decodeError", ""))
+    return {}, {
+        "code": "parse_error",
+        "message": "Could not parse Driver xAI JSON payload.",
+        "details": {
+            "raw": combined,
+            "decodeError": last_decode_error or None,
+        },
+    }
+
+
+def _extract_json_object_after_key(text: str, key: str) -> dict[str, Any] | None:
+    needle = f'"{key}"'
+    start = text.find(needle)
+    if start < 0:
+        return None
+    object_start = text.find("{", start + len(needle))
+    if object_start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(object_start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[object_start : index + 1]
+                try:
+                    payload = json.loads(candidate)
+                except json.JSONDecodeError:
+                    return None
+                return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _parse_json_text(text: str, *, marker: str) -> tuple[Any, dict[str, Any] | None]:
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as exc:
+        return None, {
+            "code": "parse_error",
+            "message": f"Invalid JSON payload for {marker}.",
+            "details": {"raw": text, "decodeError": str(exc)},
+        }
+
+
+def _normalize_error_payload(error: Any) -> dict[str, Any]:
+    if isinstance(error, dict):
+        code = error.get("code")
+        message = error.get("message")
+        details = error.get("details")
+        if isinstance(code, str) and isinstance(message, str):
+            return {
+                "code": code,
+                "message": message,
+                "details": details,
+            }
+        return {
+            "code": "driver_runtime_error",
+            "message": str(message or error),
+            "details": error,
+        }
+    return {
+        "code": "driver_runtime_error",
+        "message": str(error or "Driver xAI execution failed."),
+        "details": None,
     }
 
 

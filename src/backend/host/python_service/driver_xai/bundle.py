@@ -20,6 +20,7 @@ def prepare_bundle(
     language: str = "micropython",
     parameters: dict[str, Any] | None = None,
     include_examples: bool = False,
+    include_all_drivers: bool = False,
 ) -> dict[str, Any]:
     normalized_language = language.strip().lower()
     if normalized_language not in SUPPORTED_BUNDLE_LANGUAGES:
@@ -38,7 +39,18 @@ def prepare_bundle(
             str(output_root),
             parameters=parameter_overrides,
             include_examples=include_examples,
+            include_all_drivers=include_all_drivers,
         )
+        lock_path = output_root / "driver_xai.lock.json"
+        module_drivers: dict[str, list[str]] = {}
+        if lock_path.is_file():
+            lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
+            modules_data = lock_data.get("modules", {}) if isinstance(lock_data, dict) else {}
+            if isinstance(modules_data, dict):
+                for module_id, metadata in modules_data.items():
+                    drivers = metadata.get("drivers", []) if isinstance(metadata, dict) else []
+                    if isinstance(drivers, list):
+                        module_drivers[str(module_id)] = [str(item) for item in drivers]
         return {
             "ok": bool(result.get("ok")),
             "catalogRoot": str(catalog.root),
@@ -47,6 +59,7 @@ def prepare_bundle(
             "language": normalized_language,
             "files": result.get("files", []),
             "entrypoint": result.get("entrypoint", "driver_xai.py"),
+            "moduleDrivers": module_drivers,
             "nextAction": "Deploy this generated bundle with driver_xai_deploy_bundle or micropython_sync_project.",
         }
 
@@ -62,8 +75,9 @@ def prepare_bundle(
     for module_id in module_ids:
         info = catalog.info(module_id)
         module_dir = catalog.module_dir(module_id)
-        source_driver = module_dir / "drivers" / "micropython.py"
-        if not source_driver.is_file():
+        source_drivers = module_dir / "drivers"
+        driver_names = _driver_names(source_drivers, include_all_drivers)
+        if "micropython.py" not in driver_names:
             raise DriverXaiError(f"MicroPython driver not found for module: {module_id}")
 
         target_module = lib_modules / module_id
@@ -71,7 +85,8 @@ def prepare_bundle(
         target_drivers.mkdir(parents=True, exist_ok=True)
         _write_text(target_module / "__init__.py", f"# Generated {module_id} package.\n", written)
         _write_text(target_drivers / "__init__.py", f"# Generated {module_id} drivers package.\n", written)
-        _copy_file(source_driver, target_drivers / "micropython.py", written)
+        for driver_name in driver_names:
+            _copy_file(source_drivers / driver_name, target_drivers / driver_name, written)
 
         if include_examples:
             examples_dir = module_dir / "examples"
@@ -84,6 +99,7 @@ def prepare_bundle(
             "module_id": module_id,
             "version": info.get("version"),
             "driver": "micropython",
+            "drivers": driver_names,
             "source": str(module_dir),
         }
 
@@ -109,9 +125,18 @@ def prepare_bundle(
         "outputDir": str(output_root),
         "modules": module_ids,
         "language": normalized_language,
+        "moduleDrivers": {module_id: lock_modules[module_id]["drivers"] for module_id in module_ids},
         "files": written,
         "nextAction": "Deploy this generated bundle with driver_xai_deploy_bundle or micropython_sync_project.",
     }
+
+
+def _driver_names(source_drivers: Path, include_all_drivers: bool) -> list[str]:
+    if not source_drivers.is_dir():
+        return []
+    if include_all_drivers:
+        return sorted(path.name for path in source_drivers.iterdir() if path.is_file() and path.name != "__init__.py")
+    return ["micropython.py"]
 
 
 def _copy_file(source: Path, target: Path, written: list[str]) -> None:

@@ -44,6 +44,8 @@
     "src/backend/device/**",
     "vendor/driver_xAI/**",
     "runtime/**",
+    "docs/**",
+    "templates/**",
     "media/**",
     "package.json",
     "README.md",
@@ -643,6 +645,8 @@
   },
   "scripts": {
     "stage-runtime": "node scripts/run_stage_runtime.js",
+    "stage-stlink-runtime": "python3 scripts/stage_stlink_runtime.py",
+    "install-arm-toolchain": "python3 scripts/install_arm_toolchain.py",
     "build": "npm run stage-runtime && npm run compile",
     "compile": "tsc -p ./",
     "check": "npm run compile -- --pretty false && npm run test:python && npm run py:compile",

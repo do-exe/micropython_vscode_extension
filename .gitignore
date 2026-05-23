@@ -11,4 +11,9 @@ __pycache__/
 *.py[cod]
 /runtime/.tmp/
 /runtime/
+/toolchain/
+/templates/**/build/
+/workspace/**/build/
 FUTURE_CROSS_PLATFORM_PLAN.md
+.codex-checkpoints/
+.codex-chepoints/

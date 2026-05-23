@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from . import PersistentSession, list_detected_esp_ports
 from .driver_xai.mcp_tools import DriverXaiMcpTools
+from . import stlink
+from . import stm_build
 
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -105,6 +107,11 @@ class MicroPythonMcpServer:
             "micropython_run_and_test": self._tool_run_and_test,
             "micropython_filesystem": self._tool_filesystem,
             "micropython_soft_reset": self._tool_soft_reset,
+            "stm_stlink_status": self._tool_stlink_status,
+            "stm_stlink_flash": self._tool_stlink_flash,
+            "stm_stlink_erase": self._tool_stlink_erase,
+            "stm_build_firmware": self._tool_stm_build_firmware,
+            "stm_build_and_flash": self._tool_stm_build_and_flash,
         }
         tool = tools.get(name)
         if tool is None and self._driver_xai_tools.has_tool(name):
@@ -387,6 +394,63 @@ class MicroPythonMcpServer:
         finally:
             self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
 
+    def _tool_stlink_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 10.0
+        return stlink.stlink_status(timeout)
+
+    def _tool_stlink_flash(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        target = self._required_string(arguments, "target")
+        firmware = self._required_string(arguments, "firmwarePath")
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 120.0
+        return stlink.flash_firmware(
+            target=target,
+            firmware_path=firmware,
+            verify=bool(arguments.get("verify", True)),
+            reset=bool(arguments.get("reset", True)),
+            timeout_seconds=timeout,
+            interface=self._optional_string(arguments, "interface") or stlink.DEFAULT_INTERFACE_CONFIG,
+            address=self._optional_string(arguments, "address") or stlink.DEFAULT_FLASH_ADDRESS,
+        )
+
+    def _tool_stlink_erase(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        target = self._required_string(arguments, "target")
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 60.0
+        return stlink.erase_chip(
+            target=target,
+            timeout_seconds=timeout,
+            interface=self._optional_string(arguments, "interface") or stlink.DEFAULT_INTERFACE_CONFIG,
+        )
+
+    def _tool_stm_build_firmware(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return stm_build.build_firmware(
+            project_folder=self._required_string(arguments, "projectFolder"),
+            target=self._optional_string(arguments, "target") or "stm32f0",
+            output_dir=self._optional_string(arguments, "outputDir"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            clean=bool(arguments.get("clean", True)),
+            optimization=self._optional_string(arguments, "optimization") or "-Os",
+        )
+
+    def _tool_stm_build_and_flash(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 120.0
+        return stm_build.build_and_flash(
+            project_folder=self._required_string(arguments, "projectFolder"),
+            target=self._optional_string(arguments, "target") or "stm32f0",
+            output_dir=self._optional_string(arguments, "outputDir"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            verify=bool(arguments.get("verify", True)),
+            reset=bool(arguments.get("reset", True)),
+            timeout_seconds=timeout,
+        )
+
     def _tools(self) -> list[dict[str, Any]]:
         return [
             {
@@ -463,6 +527,90 @@ class MicroPythonMcpServer:
                         "port": {"type": "string"},
                         "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 30},
                     },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "stm_stlink_status",
+                "description": "Checks bundled/system ST-Link and OpenOCD tooling and probes attached ST-Link hardware. Use before STM32 erase or flash workflows.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 10},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "stm_stlink_flash",
+                "description": "Programs an STM32 firmware image through ST-Link using OpenOCD. Accepts .bin, .hex, or .elf firmware and a target family such as stm32f4.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "STM32 family key such as stm32f1, stm32f4, stm32g0, stm32h7, or an OpenOCD target/*.cfg path.",
+                        },
+                        "firmwarePath": {"type": "string"},
+                        "interface": {"type": "string", "default": "interface/stlink.cfg"},
+                        "address": {"type": "string", "default": "0x08000000"},
+                        "verify": {"type": "boolean", "default": True},
+                        "reset": {"type": "boolean", "default": True},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 120},
+                    },
+                    "required": ["target", "firmwarePath"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "stm_stlink_erase",
+                "description": "Erases STM32 flash through ST-Link using OpenOCD without requiring a serial MicroPython port.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "STM32 family key such as stm32f1, stm32f4, stm32g0, stm32h7, or an OpenOCD target/*.cfg path.",
+                        },
+                        "interface": {"type": "string", "default": "interface/stlink.cfg"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 60},
+                    },
+                    "required": ["target"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "stm_build_firmware",
+                "description": "Builds a local STM32 firmware project with the ignored local ARM toolchain under toolchain/arm-none-eabi. Produces .elf, .bin, and .map artifacts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "target": {"type": "string", "default": "stm32f0"},
+                        "outputDir": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "clean": {"type": "boolean", "default": True},
+                        "optimization": {"type": "string", "default": "-Os"},
+                    },
+                    "required": ["projectFolder"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "stm_build_and_flash",
+                "description": "Builds a local STM32 firmware project, then flashes the generated binary through ST-Link/OpenOCD.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "target": {"type": "string", "default": "stm32f0"},
+                        "outputDir": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "verify": {"type": "boolean", "default": True},
+                        "reset": {"type": "boolean", "default": True},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 120},
+                    },
+                    "required": ["projectFolder"],
                     "additionalProperties": False,
                 },
             },

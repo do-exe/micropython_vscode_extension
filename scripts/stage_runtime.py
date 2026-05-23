@@ -220,6 +220,7 @@ def stage_linux_runtime(repo_root: Path) -> Path:
     runtime_root = repo_root / RUNTIME_ROOT_NAME
     destination = runtime_root / key
     runtime_root.mkdir(parents=True, exist_ok=True)
+    existing_stm_runtime = collect_existing_stm_runtime(destination)
 
     stdlib_source = Path(sysconfig.get_path("stdlib"))
     if not stdlib_source.is_dir():
@@ -285,6 +286,7 @@ def stage_linux_runtime(repo_root: Path) -> Path:
         }
         (temp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
+        restore_existing_stm_runtime(temp_dir, existing_stm_runtime)
         validate_runtime(temp_dir)
         clean_runtime_artifacts(temp_dir)
 
@@ -377,6 +379,73 @@ def copy_windows_runtime_dlls(base_prefix: Path, executable_dir: Path, target_di
                     continue
                 shutil.copy2(source, target_dir / source.name)
                 copied.add(target_name)
+
+
+def collect_existing_stm_runtime(runtime_dir: Path) -> Path | None:
+    if not runtime_dir.is_dir():
+        return None
+
+    relative_paths = [
+        Path("bin/openocd"),
+        Path("bin/st-info"),
+        Path("bin/st-flash"),
+        Path("bin/st-util"),
+        Path("bin/st-trace"),
+        Path("share/openocd"),
+        Path("share/stlink"),
+        Path("lib/udev/rules.d"),
+    ]
+    stm_library_prefixes = (
+        "libcapstone",
+        "libftdi1",
+        "libgpiod",
+        "libhidapi-hidraw",
+        "libjaylink",
+        "libjim",
+        "libstlink",
+    )
+    for path in runtime_dir.glob("lib/*.so*"):
+        if path.name.startswith(stm_library_prefixes):
+            relative_paths.append(path.relative_to(runtime_dir))
+
+    temp_parent = runtime_dir.parent / ".tmp"
+    temp_parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix="stm-runtime-preserve-", dir=temp_parent))
+    copied = False
+    for relative_path in relative_paths:
+        source = runtime_dir / relative_path
+        if not source.exists() and not source.is_symlink():
+            continue
+        target = temp_dir / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True)
+        else:
+            shutil.copy2(source, target, follow_symlinks=False)
+        copied = True
+
+    if copied:
+        return temp_dir
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    return None
+
+
+def restore_existing_stm_runtime(runtime_dir: Path, preserved_dir: Path | None) -> None:
+    if preserved_dir is None:
+        return
+    try:
+        for source in preserved_dir.rglob("*"):
+            relative_path = source.relative_to(preserved_dir)
+            target = runtime_dir / relative_path
+            if source.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif source.is_file() or source.is_symlink():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+                shutil.copy2(source, target, follow_symlinks=False)
+    finally:
+        shutil.rmtree(preserved_dir, ignore_errors=True)
 
 
 def replace_runtime_directory(source: Path, destination: Path) -> None:

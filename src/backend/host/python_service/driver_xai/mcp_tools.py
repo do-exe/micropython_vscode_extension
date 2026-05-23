@@ -157,6 +157,7 @@ class DriverXaiMcpTools:
                         "language": {"type": "string", "enum": ["micropython"], "default": "micropython"},
                         "parameters": {"type": "object"},
                         "includeExamples": {"type": "boolean"},
+                        "includeAllDrivers": {"type": "boolean"},
                         "catalogRoot": {"type": "string"},
                     },
                     "required": ["modules", "outputDir"],
@@ -273,6 +274,7 @@ class DriverXaiMcpTools:
             language=_optional_string(arguments, "language") or "micropython",
             parameters=parameters,
             include_examples=bool(arguments.get("includeExamples", False)),
+            include_all_drivers=bool(arguments.get("includeAllDrivers", False)),
         )
 
     def _deploy_bundle(
