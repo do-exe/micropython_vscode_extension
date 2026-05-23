@@ -10,6 +10,8 @@ import base64
 from typing import Any, Callable
 
 from . import PersistentSession, list_detected_esp_ports
+from . import arduino
+from . import esp_idf
 from .driver_xai.mcp_tools import DriverXaiMcpTools
 from . import stlink
 from . import stm_build
@@ -112,6 +114,16 @@ class MicroPythonMcpServer:
             "stm_stlink_erase": self._tool_stlink_erase,
             "stm_build_firmware": self._tool_stm_build_firmware,
             "stm_build_and_flash": self._tool_stm_build_and_flash,
+            "arduino_toolchain_status": self._tool_arduino_toolchain_status,
+            "arduino_install_core": self._tool_arduino_install_core,
+            "arduino_compile": self._tool_arduino_compile,
+            "arduino_upload": self._tool_arduino_upload,
+            "arduino_compile_and_upload": self._tool_arduino_compile_and_upload,
+            "esp_idf_status": self._tool_esp_idf_status,
+            "esp_idf_set_target": self._tool_esp_idf_set_target,
+            "esp_idf_build": self._tool_esp_idf_build,
+            "esp_idf_flash": self._tool_esp_idf_flash,
+            "esp_idf_build_and_flash": self._tool_esp_idf_build_and_flash,
         }
         tool = tools.get(name)
         if tool is None and self._driver_xai_tools.has_tool(name):
@@ -451,6 +463,102 @@ class MicroPythonMcpServer:
             timeout_seconds=timeout,
         )
 
+    def _tool_arduino_toolchain_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return arduino.status(toolchain_path=self._optional_string(arguments, "toolchainPath"))
+
+    def _tool_arduino_install_core(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 600.0
+        return arduino.install_core(
+            self._required_string(arguments, "package"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_arduino_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 600.0
+        return arduino.compile_project(
+            project_folder=self._required_string(arguments, "projectFolder"),
+            fqbn=self._required_string(arguments, "fqbn"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            output_dir=self._optional_string(arguments, "outputDir"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_arduino_upload(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 600.0
+        return arduino.upload_project(
+            project_folder=self._required_string(arguments, "projectFolder"),
+            fqbn=self._required_string(arguments, "fqbn"),
+            port=self._required_string(arguments, "port"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_arduino_compile_and_upload(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 600.0
+        return arduino.compile_and_upload(
+            project_folder=self._required_string(arguments, "projectFolder"),
+            fqbn=self._required_string(arguments, "fqbn"),
+            port=self._required_string(arguments, "port"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            output_dir=self._optional_string(arguments, "outputDir"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_esp_idf_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return esp_idf.status(
+            idf_path=self._optional_string(arguments, "idfPath"),
+            tools_path=self._optional_string(arguments, "toolsPath"),
+        )
+
+    def _tool_esp_idf_set_target(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds")) or 900.0
+        return esp_idf.set_target(
+            self._required_string(arguments, "projectFolder"),
+            self._optional_string(arguments, "target") or "esp32",
+            idf_path=self._optional_string(arguments, "idfPath"),
+            tools_path=self._optional_string(arguments, "toolsPath"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_esp_idf_build(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds")) or 900.0
+        return esp_idf.build(
+            self._required_string(arguments, "projectFolder"),
+            idf_path=self._optional_string(arguments, "idfPath"),
+            tools_path=self._optional_string(arguments, "toolsPath"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_esp_idf_flash(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds")) or 900.0
+        return esp_idf.flash(
+            self._required_string(arguments, "projectFolder"),
+            self._required_string(arguments, "port"),
+            idf_path=self._optional_string(arguments, "idfPath"),
+            tools_path=self._optional_string(arguments, "toolsPath"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_esp_idf_build_and_flash(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds")) or 900.0
+        return esp_idf.build_and_flash(
+            self._required_string(arguments, "projectFolder"),
+            self._required_string(arguments, "port"),
+            target=self._optional_string(arguments, "target"),
+            idf_path=self._optional_string(arguments, "idfPath"),
+            tools_path=self._optional_string(arguments, "toolsPath"),
+            timeout_seconds=timeout,
+        )
+
     def _tools(self) -> list[dict[str, Any]]:
         return [
             {
@@ -611,6 +719,156 @@ class MicroPythonMcpServer:
                         "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 120},
                     },
                     "required": ["projectFolder"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_toolchain_status",
+                "description": "Checks local Arduino CLI installation under toolchain/arduino without using system-wide Arduino tools.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "toolchainPath": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_install_core",
+                "description": "Installs an Arduino core package into the local ignored Arduino toolchain cache, for example arduino:avr.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "package": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["package"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_compile",
+                "description": "Compiles an Arduino sketch using local arduino-cli and an FQBN such as arduino:avr:uno.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "fqbn": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "outputDir": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["projectFolder", "fqbn"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_upload",
+                "description": "Uploads a compiled Arduino sketch using local arduino-cli, an FQBN, and a serial port.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "fqbn": {"type": "string"},
+                        "port": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["projectFolder", "fqbn", "port"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_compile_and_upload",
+                "description": "Compiles and uploads an Arduino sketch using local arduino-cli.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "fqbn": {"type": "string"},
+                        "port": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "outputDir": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["projectFolder", "fqbn", "port"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "esp_idf_status",
+                "description": "Checks the extension-local ESP-IDF copy under toolchain/esp-idf and tools under toolchain/espressif.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "idfPath": {"type": "string"},
+                        "toolsPath": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "esp_idf_set_target",
+                "description": "Runs idf.py set-target for an ESP-IDF project, defaulting to esp32.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "target": {"type": "string", "default": "esp32"},
+                        "idfPath": {"type": "string"},
+                        "toolsPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["projectFolder"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "esp_idf_build",
+                "description": "Builds an ESP-IDF project using the extension-local ESP-IDF toolchain.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "idfPath": {"type": "string"},
+                        "toolsPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["projectFolder"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "esp_idf_flash",
+                "description": "Flashes an already-built ESP-IDF project to a serial port.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "port": {"type": "string"},
+                        "idfPath": {"type": "string"},
+                        "toolsPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["projectFolder", "port"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "esp_idf_build_and_flash",
+                "description": "Builds and flashes an ESP-IDF project using the extension-local ESP-IDF toolchain.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "port": {"type": "string"},
+                        "target": {"type": "string", "default": "esp32"},
+                        "idfPath": {"type": "string"},
+                        "toolsPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["projectFolder", "port"],
                     "additionalProperties": False,
                 },
             },

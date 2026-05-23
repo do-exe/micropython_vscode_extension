@@ -4,6 +4,8 @@ Reusable project skeletons live here by platform/runtime. Templates describe the
 
 ```text
 templates/stm/
+templates/arduino/
+templates/esp-idf/
 templates/micropython/
 templates/raspberry-pi/
 ```

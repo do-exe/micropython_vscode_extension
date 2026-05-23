@@ -14,6 +14,8 @@ __pycache__/
 /toolchain/
 /templates/**/build/
 /workspace/**/build/
+/workspace/**/managed_components/
+/workspace/**/dependencies.lock
 FUTURE_CROSS_PLATFORM_PLAN.md
 .codex-checkpoints/
 .codex-chepoints/

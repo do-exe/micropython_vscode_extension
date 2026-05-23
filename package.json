@@ -647,6 +647,8 @@
     "stage-runtime": "node scripts/run_stage_runtime.js",
     "stage-stlink-runtime": "python3 scripts/stage_stlink_runtime.py",
     "install-arm-toolchain": "python3 scripts/install_arm_toolchain.py",
+    "install-arduino-toolchain": "python3 scripts/install_arduino_toolchain.py",
+    "install-esp-idf-toolchain": "python3 scripts/install_esp_idf_toolchain.py",
     "build": "npm run stage-runtime && npm run compile",
     "compile": "tsc -p ./",
     "check": "npm run compile -- --pretty false && npm run test:python && npm run py:compile",
