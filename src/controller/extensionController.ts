@@ -490,6 +490,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
       await fs.promises.mkdir(projectFolder, { recursive: true });
       await fs.promises.cp(this.platformTemplateFolder(platformId), projectFolder, { recursive: true });
+      await this.finalizeCreatedPlatformProject(platformId, projectFolder);
       await this.setSelectedPlatformProjectFolder(platformId, projectFolder);
       await this.rememberRecentPlatformProject(platformId, projectFolder);
       await this.addFolderToWorkspace(projectFolder);
@@ -536,6 +537,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
       await fs.promises.mkdir(projectFolder, { recursive: true });
       await fs.promises.cp(this.platformTemplateFolder(setup.platformId), projectFolder, { recursive: true });
+      await this.finalizeCreatedPlatformProject(setup.platformId, projectFolder);
       await this.applyPlatformSetup(setup.platformId, setup.boardTarget, setup.port);
       await this.setSelectedPlatformProjectFolder(setup.platformId, projectFolder);
       await this.rememberRecentPlatformProject(setup.platformId, projectFolder, {
@@ -577,6 +579,28 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     await this.applyPlatformSelection(platformId);
     await this.focusPlatformPrimaryView(platformId);
     void vscode.window.showInformationMessage(`${this.platformLabel(platformId)} project opened: ${folder}`);
+  }
+
+  private async finalizeCreatedPlatformProject(platformId: PlatformId, projectFolder: string): Promise<void> {
+    if (platformId !== "arduino") {
+      return;
+    }
+
+    const sketchName = `${path.basename(projectFolder)}.ino`;
+    const expectedSketchPath = path.join(projectFolder, sketchName);
+    if (await this.pathExists(expectedSketchPath)) {
+      return;
+    }
+
+    const entries = await fs.promises.readdir(projectFolder, { withFileTypes: true });
+    const inoFiles = entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".ino"))
+      .map((entry) => entry.name);
+    if (inoFiles.length !== 1) {
+      return;
+    }
+
+    await fs.promises.rename(path.join(projectFolder, inoFiles[0]), expectedSketchPath);
   }
 
   private async getSelectedPlatformProjectFolder(platformId: PlatformId): Promise<string | undefined> {
