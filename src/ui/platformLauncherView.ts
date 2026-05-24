@@ -248,8 +248,8 @@ export class EspIdfActionViewProvider implements vscode.TreeDataProvider<EspIdfT
   public getChildren(element?: EspIdfTreeItem): EspIdfTreeItem[] {
     if (!element) {
       return [
-        new EspIdfSectionItem("resources", "Required Resources", "checklist"),
         new EspIdfSectionItem("actions", "Actions", "tools"),
+        new EspIdfSectionItem("resources", "Required Resources", "checklist"),
       ];
     }
 
