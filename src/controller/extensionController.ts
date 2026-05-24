@@ -1135,13 +1135,25 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
   private async pickArduinoFqbn(): Promise<string | undefined> {
     const current = this.context.workspaceState.get<string>(SELECTED_ARDUINO_FQBN_KEY) ?? "arduino:avr:uno";
-    const picks = [
+    const boardPicks = [
       { label: "Arduino Uno", description: "arduino:avr:uno", fqbn: "arduino:avr:uno" },
       { label: "Arduino Nano", description: "arduino:avr:nano", fqbn: "arduino:avr:nano" },
       { label: "Arduino Mega 2560", description: "arduino:avr:mega", fqbn: "arduino:avr:mega" },
       { label: "Arduino Leonardo", description: "arduino:avr:leonardo", fqbn: "arduino:avr:leonardo" },
       { label: "Arduino Micro", description: "arduino:avr:micro", fqbn: "arduino:avr:micro" },
       { label: "Arduino Pro Mini", description: "arduino:avr:pro", fqbn: "arduino:avr:pro" },
+    ];
+    const currentBoard = boardPicks.find((pick) => pick.fqbn === current);
+    const picks = [
+      {
+        label: `$(check) ${currentBoard?.label ?? "Selected Board"}`,
+        description: current,
+        detail: "Currently selected for this project",
+        fqbn: current,
+      },
+      ...boardPicks
+        .filter((pick) => pick.fqbn !== current)
+        .map((pick) => ({ ...pick, detail: "Available board" })),
       { label: "Enter FQBN manually", description: current, fqbn: "__manual__" },
     ];
     const choice = await vscode.window.showQuickPick(picks, {

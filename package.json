@@ -389,7 +389,8 @@
       {
         "command": "micropython.arduino.selectBoard",
         "title": "Arduino: Select Board",
-        "category": "Arduino"
+        "category": "Arduino",
+        "icon": "$(circuit-board)"
       },
       {
         "command": "micropython.arduino.compile",
@@ -671,6 +672,11 @@
     ],
     "menus": {
       "editor/title": [
+        {
+          "command": "micropython.arduino.selectBoard",
+          "when": "resourceExtname == .ino && micropython.platform.arduinoProjectActive",
+          "group": "navigation@0"
+        },
         {
           "command": "micropython.arduino.compile",
           "when": "resourceExtname == .ino && micropython.platform.arduinoProjectActive",
