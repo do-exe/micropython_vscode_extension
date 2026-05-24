@@ -171,9 +171,9 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     this.cleanupOutput = vscode.window.createOutputChannel("MicroPython Clear All Files");
     this.workspaceOutput = vscode.window.createOutputChannel("MicroPython Workspace");
     this.workspaceFetchOutput = vscode.window.createOutputChannel("MicroPython Workspace Fetch");
-    this.arduinoOutput = vscode.window.createOutputChannel("Arduino");
-    this.espIdfOutput = vscode.window.createOutputChannel("ESP-IDF");
-    this.stmOutput = vscode.window.createOutputChannel("STM");
+    this.arduinoOutput = vscode.window.createOutputChannel("Arduino", { log: true });
+    this.espIdfOutput = vscode.window.createOutputChannel("ESP-IDF", { log: true });
+    this.stmOutput = vscode.window.createOutputChannel("STM", { log: true });
     this.workspaceFileSystemProvider = new MicroPythonWorkspaceFileSystemProvider({
       stat: async (uri: vscode.Uri) => this.statWorkspaceUri(uri),
       readDirectory: async (uri: vscode.Uri) => this.readWorkspaceDirectoryUri(uri),
@@ -1344,15 +1344,24 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     if (typeof result.stderr === "string" && result.stderr.length > 0) {
       output.appendLine("");
       output.appendLine("stderr:");
-      output.appendLine(result.stderr);
+      this.appendOutputError(output, result.stderr);
     }
     if (result.error) {
       output.appendLine("");
-      output.appendLine(`Error: ${result.error}`);
+      this.appendOutputError(output, `Error: ${result.error}`);
     }
     output.appendLine("");
     output.appendLine("Result:");
     output.appendLine(JSON.stringify(result, null, 2));
+  }
+
+  private appendOutputError(output: vscode.OutputChannel, message: string): void {
+    if ("error" in output && typeof output.error === "function") {
+      (output as vscode.LogOutputChannel).error(message);
+      return;
+    }
+
+    output.appendLine(message);
   }
 
   public dispose(): void {
