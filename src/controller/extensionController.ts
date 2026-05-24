@@ -1146,15 +1146,15 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     const currentBoard = boardPicks.find((pick) => pick.fqbn === current);
     const picks = [
       {
-        label: `$(check) ${currentBoard?.label ?? "Selected Board"}`,
-        description: current,
-        detail: "Currently selected for this project",
+        label: currentBoard?.label ?? "Selected Board",
+        description: `Project Board · ${current}`,
+        detail: "Selected while creating or opening this Arduino project",
         fqbn: current,
       },
       ...boardPicks
         .filter((pick) => pick.fqbn !== current)
-        .map((pick) => ({ ...pick, detail: "Available board" })),
-      { label: "Enter FQBN manually", description: current, fqbn: "__manual__" },
+        .map((pick) => ({ ...pick, description: `Other Board · ${pick.description}`, detail: "Switch this project to this board" })),
+      { label: "Enter FQBN manually", description: "Other Board", detail: current, fqbn: "__manual__" },
     ];
     const choice = await vscode.window.showQuickPick(picks, {
       title: "Arduino: Select Board",
@@ -1357,7 +1357,11 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
   private appendOutputError(output: vscode.OutputChannel, message: string): void {
     if ("error" in output && typeof output.error === "function") {
-      (output as vscode.LogOutputChannel).error(message);
+      for (const line of message.split(/\r?\n/)) {
+        if (line.trim().length > 0) {
+          (output as vscode.LogOutputChannel).error(line);
+        }
+      }
       return;
     }
 
