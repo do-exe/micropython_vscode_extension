@@ -395,13 +395,13 @@
         "command": "micropython.arduino.compile",
         "title": "Arduino: Compile",
         "category": "Arduino",
-        "icon": "$(gear)"
+        "icon": "$(check)"
       },
       {
         "command": "micropython.arduino.upload",
         "title": "Arduino: Upload",
         "category": "Arduino",
-        "icon": "$(cloud-upload)"
+        "icon": "$(arrow-right)"
       },
       {
         "command": "micropython.arduino.compileAndUpload",
