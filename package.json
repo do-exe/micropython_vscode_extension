@@ -394,12 +394,14 @@
       {
         "command": "micropython.arduino.compile",
         "title": "Arduino: Compile",
-        "category": "Arduino"
+        "category": "Arduino",
+        "icon": "$(gear)"
       },
       {
         "command": "micropython.arduino.upload",
         "title": "Arduino: Upload",
-        "category": "Arduino"
+        "category": "Arduino",
+        "icon": "$(cloud-upload)"
       },
       {
         "command": "micropython.arduino.compileAndUpload",
@@ -668,6 +670,18 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "micropython.arduino.compile",
+          "when": "resourceExtname == .ino && micropython.platform.arduinoProjectActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "micropython.arduino.upload",
+          "when": "resourceExtname == .ino && micropython.platform.arduinoProjectActive",
+          "group": "navigation@2"
+        }
+      ],
       "view/title": [
         {
           "command": "micropython.newWorkspaceFile",
