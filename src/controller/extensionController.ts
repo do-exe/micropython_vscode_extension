@@ -744,10 +744,11 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
   private async addFolderToWorkspace(folder: string): Promise<void> {
     const current = vscode.workspace.workspaceFolders ?? [];
-    if (current.some((workspaceFolder) => path.resolve(workspaceFolder.uri.fsPath) === path.resolve(folder))) {
+    const resolvedFolder = path.resolve(folder);
+    if (current.length === 1 && path.resolve(current[0].uri.fsPath) === resolvedFolder) {
       return;
     }
-    vscode.workspace.updateWorkspaceFolders(current.length, 0, { uri: vscode.Uri.file(folder) });
+    vscode.workspace.updateWorkspaceFolders(0, current.length, { uri: vscode.Uri.file(folder) });
   }
 
   private async pathExists(candidate: string): Promise<boolean> {
