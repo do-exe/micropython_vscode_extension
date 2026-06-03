@@ -83,7 +83,18 @@ def _safe_sync_filesystem(controller: MicroPythonController) -> bool:
         return False
 
 def run_soft_reset(port: str, timeout_seconds: float) -> dict[str, Any]:
-    controller = MicroPythonController(port, exclusive=False)
+    try:
+        controller = MicroPythonController(port, exclusive=False)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "promptSeen": False,
+            "rebootSeen": False,
+            "port": port,
+            "output": "",
+            "error": str(exc),
+        }
+
     try:
         return controller.soft_reset(timeout_seconds)
     except Exception as exc:
@@ -116,7 +127,17 @@ def run_file(
             "error": str(exc),
         }
 
-    controller = MicroPythonController(port, exclusive=False)
+    try:
+        controller = MicroPythonController(port, exclusive=False)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "port": port,
+            "localFile": str(local_path),
+            "output": "",
+            "error": str(exc),
+        }
+
     payload: dict[str, Any]
     recovery_payload: dict[str, Any] | None = None
     try:

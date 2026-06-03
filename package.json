@@ -158,6 +158,14 @@
         }
       },
       {
+        "command": "micropython.runFileEditor",
+        "title": "Run",
+        "icon": {
+          "light": "media/run-editor.svg",
+          "dark": "media/run-editor.svg"
+        }
+      },
+      {
         "command": "micropython.openTerminal",
         "title": "MicroPython: Open Terminal",
         "icon": {
@@ -672,6 +680,11 @@
     ],
     "menus": {
       "editor/title": [
+        {
+          "command": "micropython.runFileEditor",
+          "when": "resourceLangId == python && micropython.platform.micropythonProjectActive && micropython.runAvailable",
+          "group": "navigation@0"
+        },
         {
           "command": "micropython.arduino.selectBoard",
           "when": "resourceExtname == .ino && micropython.platform.arduinoProjectActive",

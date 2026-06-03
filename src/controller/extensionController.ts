@@ -94,8 +94,6 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   private readonly backend: BackendServiceClient;
   private readonly aiCommands: AICommands;
   private readonly statusItem: vscode.StatusBarItem;
-  private readonly runItem: vscode.StatusBarItem;
-  private readonly runInteractiveItem: vscode.StatusBarItem;
   private readonly workspaceSyncItem: vscode.StatusBarItem;
   private readonly runOutput: vscode.OutputChannel;
   private readonly syncOutput: vscode.OutputChannel;
@@ -152,16 +150,6 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     this.statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.statusItem.command = "micropython.selectDevice";
     this.statusItem.show();
-
-    this.runItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
-    this.runItem.command = "micropython.runCurrentFile";
-    this.runItem.text = "$(play) Run Non-Interactive";
-    this.runItem.tooltip = "Run active Python file on MicroPython through raw REPL";
-
-    this.runInteractiveItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
-    this.runInteractiveItem.command = "micropython.runInteractiveFile";
-    this.runInteractiveItem.text = "$(terminal) Run Interactive";
-    this.runInteractiveItem.tooltip = "Run active Python file on MicroPython through the normal REPL";
 
     this.workspaceSyncItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
     this.workspaceSyncItem.hide();
@@ -343,8 +331,6 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   public async start(): Promise<void> {
     this.context.subscriptions.push(
       this.statusItem,
-      this.runItem,
-      this.runInteractiveItem,
       this.workspaceSyncItem,
       this.runOutput,
       this.syncOutput,
@@ -491,6 +477,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       await fs.promises.mkdir(projectFolder, { recursive: true });
       await fs.promises.cp(this.platformTemplateFolder(platformId), projectFolder, { recursive: true });
       await this.finalizeCreatedPlatformProject(platformId, projectFolder);
+      await this.configureMicroPythonProjectSync(platformId, projectFolder);
       await this.setSelectedPlatformProjectFolder(platformId, projectFolder);
       await this.rememberRecentPlatformProject(platformId, projectFolder);
       await this.addFolderToWorkspace(projectFolder);
@@ -510,6 +497,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
     await this.setSelectedPlatformProjectFolder(platformId, folder);
     await this.rememberRecentPlatformProject(platformId, folder);
+    await this.configureMicroPythonProjectSync(platformId, folder);
     await this.addFolderToWorkspace(folder);
     await this.applyPlatformSelection(platformId);
     await this.focusPlatformPrimaryView(platformId);
@@ -522,9 +510,9 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     }
 
     const projectName = setup.projectName.trim();
-    const parentFolder = setup.parentFolder.trim();
-    if (!projectName || !parentFolder) {
-      void vscode.window.showErrorMessage("Project name and location are required.");
+    const parentFolder = setup.parentFolder?.trim() || this.defaultPlatformWorkspaceFolder(setup.platformId);
+    if (!projectName) {
+      void vscode.window.showErrorMessage("Project name is required.");
       return;
     }
 
@@ -538,6 +526,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       await fs.promises.mkdir(projectFolder, { recursive: true });
       await fs.promises.cp(this.platformTemplateFolder(setup.platformId), projectFolder, { recursive: true });
       await this.finalizeCreatedPlatformProject(setup.platformId, projectFolder);
+      await this.configureMicroPythonProjectSync(setup.platformId, projectFolder);
       await this.applyPlatformSetup(setup.platformId, setup.boardTarget, setup.port);
       await this.setSelectedPlatformProjectFolder(setup.platformId, projectFolder);
       await this.rememberRecentPlatformProject(setup.platformId, projectFolder, {
@@ -569,6 +558,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     const recent = this.readRecentPlatformProjects().find((project) => path.resolve(project.folder) === path.resolve(folder));
     await this.applyPlatformSetup(platformId, recent?.boardTarget, recent?.port);
     await this.setSelectedPlatformProjectFolder(platformId, folder);
+    await this.configureMicroPythonProjectSync(platformId, folder);
     await this.rememberRecentPlatformProject(platformId, folder, {
       boardTarget: recent?.boardTarget,
       port: recent?.port,
@@ -601,6 +591,22 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     }
 
     await fs.promises.rename(path.join(projectFolder, inoFiles[0]), expectedSketchPath);
+  }
+
+  private async configureMicroPythonProjectSync(platformId: PlatformId, projectFolder: string): Promise<void> {
+    if (platformId !== "micropython") {
+      return;
+    }
+
+    const selection = await this.buildSyncFolderSelection(projectFolder);
+    await this.setLinkedFolderSelection(selection);
+
+    if (!this.backendReady || !this.selectedPort) {
+      void vscode.window.setStatusBarMessage("MicroPython project linked. Select a device to start folder sync.", 5000);
+      return;
+    }
+
+    this.queueLinkedFolderSync(0);
   }
 
   private async getSelectedPlatformProjectFolder(platformId: PlatformId): Promise<string | undefined> {
@@ -740,6 +746,16 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       stm: "templates/stm/baremetal_app",
     };
     return path.join(this.context.extensionPath, folders[platformId]);
+  }
+
+  private defaultPlatformWorkspaceFolder(platformId: PlatformId): string {
+    const folders: Record<PlatformId, string> = {
+      micropython: "micropython",
+      arduino: "arduino",
+      espidf: "esp-idf",
+      stm: "stm",
+    };
+    return path.join(this.context.extensionPath, "workspace", folders[platformId]);
   }
 
   private async addFolderToWorkspace(folder: string): Promise<void> {
@@ -1395,8 +1411,6 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
     this.backend.dispose();
     this.statusItem.dispose();
-    this.runItem.dispose();
-    this.runInteractiveItem.dispose();
     this.workspaceSyncItem.dispose();
     this.runOutput.dispose();
     this.syncOutput.dispose();
@@ -1412,6 +1426,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       softResetDevice: () => this.softResetDevice(),
       runCurrentFile: () => this.runCurrentFile(),
       runInteractiveFile: () => this.runInteractiveFile(),
+      runAutoFile: () => this.runAutoFile(),
       linkFolder: () => this.linkFolderCommand(),
       syncFolder: (uri?: vscode.Uri) => this.syncFolderCommand(uri),
       fetchWorkspace: () => this.fetchWorkspaceCommand(),
@@ -1696,6 +1711,34 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       this.runInFlight = false;
       this.setRunButtonBusy(false);
     }
+  }
+
+  private async runAutoFile(): Promise<void> {
+    let localFile: string | undefined;
+    try {
+      localFile = await this.resolveLocalFileForRun();
+    } catch (error) {
+      void vscode.window.showErrorMessage(this.errorMessage(error, "Run aborted."));
+      return;
+    }
+    if (!localFile) {
+      return;
+    }
+
+    let source: string;
+    try {
+      source = await this.readLocalRunSource(localFile);
+    } catch (error) {
+      void vscode.window.showErrorMessage(this.errorMessage(error, "Could not inspect script before run."));
+      return;
+    }
+
+    if (this.scriptNeedsInteractiveInput(source)) {
+      await this.runInteractiveFile();
+      return;
+    }
+
+    await this.runCurrentFile();
   }
 
   private async runInteractiveFile(): Promise<void> {
@@ -3882,6 +3925,27 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     return picked[0].fsPath;
   }
 
+  private async readLocalRunSource(localFile: string): Promise<string> {
+    const editor = vscode.window.activeTextEditor;
+    if (editor && editor.document.uri.scheme === "file" && path.resolve(editor.document.fileName) === path.resolve(localFile)) {
+      return editor.document.getText();
+    }
+    return fs.promises.readFile(localFile, "utf8");
+  }
+
+  private scriptNeedsInteractiveInput(source: string): boolean {
+    const stripped = this.stripPythonCommentsAndStrings(source);
+    return /\binput\s*\(/.test(stripped) ||
+      /\bsys\s*\.\s*stdin\b/.test(stripped) ||
+      /\bstdin\s*\.\s*read(?:line)?\s*\(/.test(stripped);
+  }
+
+  private stripPythonCommentsAndStrings(source: string): string {
+    return source.replace(/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#[^\n\r]*)/g, (match) => {
+      return "\n".repeat((match.match(/\n/g) ?? []).length);
+    });
+  }
+
   private async resolvePortForOperation(): Promise<string> {
     await this.pollDevices();
 
@@ -4305,29 +4369,11 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   }
 
   private setRunVisible(visible: boolean): void {
-    if (visible) {
-      this.runItem.show();
-      this.runInteractiveItem.show();
-      return;
-    }
-    this.runItem.hide();
-    this.runInteractiveItem.hide();
+    void vscode.commands.executeCommand("setContext", "micropython.runAvailable", visible);
   }
 
   private setRunButtonBusy(busy: boolean): void {
-    if (busy) {
-      this.runItem.text = "$(sync~spin) Running Non-Interactive";
-      this.runItem.tooltip = "MicroPython non-interactive run in progress";
-      this.runItem.command = undefined;
-      this.runInteractiveItem.command = undefined;
-      return;
-    }
-    this.runItem.text = "$(play) Run Non-Interactive";
-    this.runItem.tooltip = "Run active Python file on MicroPython through raw REPL";
-    this.runItem.command = "micropython.runCurrentFile";
-    this.runInteractiveItem.command = "micropython.runInteractiveFile";
-    this.runInteractiveItem.text = "$(terminal) Run Interactive";
-    this.runInteractiveItem.tooltip = "Run active Python file on MicroPython through the normal REPL";
+    void busy;
   }
 
   private errorMessage(error: unknown, fallback: string): string {

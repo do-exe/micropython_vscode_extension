@@ -19,7 +19,7 @@ export type PlatformRecentProject = {
 export type PlatformProjectSetup = {
   readonly platformId: PlatformId;
   readonly projectName: string;
-  readonly parentFolder: string;
+  readonly parentFolder?: string;
   readonly boardTarget?: string;
   readonly port?: string;
 };
@@ -318,15 +318,10 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
         command?: unknown;
         platformId?: unknown;
         projectName?: unknown;
-        parentFolder?: unknown;
         boardTarget?: unknown;
         port?: unknown;
         folder?: unknown;
       };
-      if (candidate.command === "chooseLocation") {
-        void this.chooseLocation(webviewView.webview);
-        return;
-      }
       if (candidate.command === "launchProject" && this.isPlatformId(candidate.platformId)) {
         const setup = this.toPlatformProjectSetup(candidate);
         if (setup) {
@@ -344,29 +339,9 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     });
   }
 
-  private async chooseLocation(webview: vscode.Webview): Promise<void> {
-    const picked = await vscode.window.showOpenDialog({
-      canSelectFiles: false,
-      canSelectFolders: true,
-      canSelectMany: false,
-      openLabel: "Use Location",
-      title: "Project Setup: Select Location",
-    });
-    if (!picked || picked.length === 0) {
-      return;
-    }
-
-    try {
-      await webview.postMessage({ command: "locationSelected", folder: picked[0].fsPath });
-    } catch {
-      // The setup view may be hidden or disposed while the native folder picker is open.
-    }
-  }
-
   private toPlatformProjectSetup(candidate: {
     platformId?: unknown;
     projectName?: unknown;
-    parentFolder?: unknown;
     boardTarget?: unknown;
     port?: unknown;
   }): PlatformProjectSetup | undefined {
@@ -376,14 +351,10 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     if (typeof candidate.projectName !== "string" || candidate.projectName.trim().length === 0) {
       return undefined;
     }
-    if (typeof candidate.parentFolder !== "string" || candidate.parentFolder.trim().length === 0) {
-      return undefined;
-    }
 
     return {
       platformId: candidate.platformId,
       projectName: candidate.projectName.trim(),
-      parentFolder: candidate.parentFolder.trim(),
       boardTarget: typeof candidate.boardTarget === "string" ? candidate.boardTarget.trim() : undefined,
       port: typeof candidate.port === "string" ? candidate.port.trim() : undefined,
     };
@@ -397,18 +368,6 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     const nonce = getNonce();
     const recentProjects = this.recentProjects();
     const recentProjectsJson = JSON.stringify(recentProjects).replace(/</g, "\\u003c");
-    const recentRows = recentProjects.length > 0
-      ? recentProjects.map((project, index) => (
-        `<button class="recent-row recent-row-${project.platformId}" type="button" data-index="${index}">
-          <span class="badge badge-${project.platformId}">${escapeHtml(project.platformLabel)}</span>
-          <span class="recent-main">
-            <span class="recent-name">${escapeHtml(project.name)}</span>
-            <span class="recent-folder">${escapeHtml(project.folder)}</span>
-          </span>
-          <span class="open-icon">Open</span>
-        </button>`
-      )).join("")
-      : `<div class="empty">No recent projects yet</div>`;
     const platformOptions = PLATFORMS.map((platform) => (
       `<option value="${platform.id}">${escapeHtml(platform.label)}</option>`
     )).join("");
@@ -491,13 +450,6 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       color: var(--vscode-input-placeholderForeground);
     }
 
-    .location-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 6px;
-      align-items: center;
-    }
-
     .field {
       display: flex;
       align-items: center;
@@ -507,7 +459,6 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       text-overflow: ellipsis;
     }
 
-    .secondary-button,
     .launch,
     .recent-row {
       display: flex;
@@ -517,17 +468,6 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       border-radius: 4px;
       font: inherit;
       cursor: pointer;
-    }
-
-    .secondary-button {
-      padding: 0 8px;
-      color: var(--vscode-button-secondaryForeground);
-      background: var(--vscode-button-secondaryBackground);
-      border: 1px solid transparent;
-    }
-
-    .secondary-button:hover:not(:disabled) {
-      background: var(--vscode-button-secondaryHoverBackground);
     }
 
     .launch {
@@ -557,6 +497,15 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       margin-top: 4px;
       padding-top: 10px;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-widget-border));
+    }
+
+    .recent-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 150px;
+      overflow-y: auto;
+      padding-right: 2px;
     }
 
     .recent-row {
@@ -653,6 +602,11 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     .open-icon {
       align-self: center;
     }
+
+    .recent-search {
+      min-height: 26px;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
@@ -670,23 +624,14 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     <div class="group disabled" id="projectGroup">
       <span class="group-label">New Project</span>
       <input id="projectName" type="text" placeholder="Project name" disabled>
-      <div class="location-row">
-        <span class="field" id="locationValue">Location</span>
-        <button class="secondary-button" id="chooseLocation" type="button" disabled>Browse</button>
-      </div>
-    </div>
-
-    <div class="group disabled" id="targetGroup">
-      <label id="targetLabel" for="boardTarget">Board / Target</label>
-      <input id="boardTarget" type="search" list="targetOptions" placeholder="Search board or target" disabled>
-      <datalist id="targetOptions"></datalist>
     </div>
 
     <button class="launch" id="launch" type="button" disabled>Launch Framework</button>
 
     <section class="recent" aria-label="Recent Projects">
       <span class="section-title">Recent Projects</span>
-      ${recentRows}
+      <input class="recent-search" id="recentSearch" type="search" placeholder="Search recent projects">
+      <div class="recent-list" id="recentList"></div>
     </section>
   </form>
 
@@ -696,14 +641,9 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     const framework = document.getElementById("framework");
     const projectGroup = document.getElementById("projectGroup");
     const projectName = document.getElementById("projectName");
-    const locationValue = document.getElementById("locationValue");
-    const chooseLocation = document.getElementById("chooseLocation");
-    const targetGroup = document.getElementById("targetGroup");
-    const targetLabel = document.getElementById("targetLabel");
-    const boardTarget = document.getElementById("boardTarget");
-    const targetOptionsList = document.getElementById("targetOptions");
     const launch = document.getElementById("launch");
-    let parentFolder = "";
+    const recentSearch = document.getElementById("recentSearch");
+    const recentList = document.getElementById("recentList");
 
     const projectDefaults = {
       micropython: "micropython_app",
@@ -711,51 +651,6 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       espidf: "esp_idf_app",
       stm: "stm_baremetal_app",
     };
-    const targetOptions = {
-      micropython: [{ label: "Not required", value: "" }],
-      arduino: [
-        { label: "Arduino Uno", value: "arduino:avr:uno" },
-        { label: "Arduino Nano", value: "arduino:avr:nano" },
-        { label: "Arduino Mega 2560", value: "arduino:avr:mega" },
-        { label: "Arduino Leonardo", value: "arduino:avr:leonardo" },
-        { label: "Arduino Micro", value: "arduino:avr:micro" },
-        { label: "Arduino Pro Mini", value: "arduino:avr:pro" },
-      ],
-      espidf: [
-        { label: "ESP32", value: "esp32" },
-        { label: "ESP32-S3", value: "esp32s3" },
-        { label: "ESP32-C3", value: "esp32c3" },
-      ],
-      stm: [
-        { label: "STM32F0", value: "stm32f0" },
-        { label: "STM32F1", value: "stm32f1" },
-        { label: "STM32F4", value: "stm32f4" },
-      ],
-    };
-
-    function needsTarget(platformId) {
-      return platformId === "arduino" || platformId === "espidf" || platformId === "stm";
-    }
-
-    function setTargetOptions(platformId) {
-      const options = targetOptions[platformId] || [];
-      boardTarget.value = "";
-      targetOptionsList.textContent = "";
-      for (const option of options) {
-        const item = document.createElement("option");
-        item.value = option.value;
-        item.label = option.label;
-        targetOptionsList.appendChild(item);
-      }
-      if (platformId === "arduino") {
-        targetLabel.textContent = "Board";
-      } else if (platformId === "espidf" || platformId === "stm") {
-        targetLabel.textContent = "Target";
-      } else {
-        targetLabel.textContent = "Board / Target";
-      }
-    }
-
     function setGroupEnabled(group, enabled) {
       group.classList.toggle("disabled", !enabled);
     }
@@ -763,46 +658,74 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     function updateState() {
       const platformId = framework.value;
       const hasFramework = Boolean(platformId);
-      const hasProject = projectName.value.trim().length > 0 && Boolean(parentFolder);
-      const targetRequired = needsTarget(platformId);
-      const targetReady = !targetRequired || boardTarget.value.trim().length > 0;
-      const targetEnabled = hasFramework && hasProject;
+      const hasProject = projectName.value.trim().length > 0;
 
       setGroupEnabled(projectGroup, hasFramework);
       projectName.disabled = !hasFramework;
-      chooseLocation.disabled = !hasFramework;
 
-      setGroupEnabled(targetGroup, targetEnabled);
-      boardTarget.disabled = !targetEnabled || !targetRequired;
+      launch.disabled = !(hasFramework && hasProject);
+    }
 
-      launch.disabled = !(hasFramework && hasProject && targetReady);
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderRecentProjects() {
+      const query = recentSearch.value.trim().toLowerCase();
+      const filtered = recentProjects.filter((project) => {
+        if (!query) {
+          return true;
+        }
+        return [
+          project.name,
+          project.folder,
+          project.platformLabel,
+        ].join(" ").toLowerCase().includes(query);
+      });
+
+      if (filtered.length === 0) {
+        recentList.innerHTML = '<div class="empty">No recent project found</div>';
+        return;
+      }
+
+      recentList.innerHTML = filtered.map((project) => {
+        const index = recentProjects.indexOf(project);
+        return '<button class="recent-row recent-row-' + escapeHtml(project.platformId) + '" type="button" data-index="' + index + '">' +
+          '<span class="badge badge-' + escapeHtml(project.platformId) + '">' + escapeHtml(project.platformLabel) + '</span>' +
+          '<span class="recent-main">' +
+          '<span class="recent-name">' + escapeHtml(project.name) + '</span>' +
+          '<span class="recent-folder">' + escapeHtml(project.folder) + '</span>' +
+          '</span>' +
+          '<span class="open-icon">Open</span>' +
+          '</button>';
+      }).join("");
     }
 
     framework.addEventListener("change", () => {
       const platformId = framework.value;
-      setTargetOptions(platformId);
       if (platformId && !projectName.value.trim()) {
         projectName.value = projectDefaults[platformId] || "";
       }
       updateState();
     });
     projectName.addEventListener("input", updateState);
-    boardTarget.addEventListener("input", updateState);
-    chooseLocation.addEventListener("click", () => {
-      vscode.postMessage({ command: "chooseLocation" });
-    });
     launch.addEventListener("click", () => {
       vscode.postMessage({
         command: "launchProject",
         platformId: framework.value,
         projectName: projectName.value,
-        parentFolder,
-        boardTarget: boardTarget.value.trim(),
       });
     });
 
-    for (const row of document.querySelectorAll(".recent-row")) {
-      row.addEventListener("click", () => {
+    recentSearch.addEventListener("input", renderRecentProjects);
+    recentList.addEventListener("click", (event) => {
+      const row = event.target.closest(".recent-row");
+      if (row) {
         const project = recentProjects[Number(row.dataset.index)];
         if (!project) {
           return;
@@ -812,21 +735,10 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
           platformId: project.platformId,
           folder: project.folder,
         });
-      });
-    }
-
-    window.addEventListener("message", (event) => {
-      const message = event.data;
-      if (!message || message.command !== "locationSelected") {
-        return;
       }
-      parentFolder = message.folder || "";
-      locationValue.textContent = parentFolder || "Location";
-      locationValue.title = parentFolder;
-      updateState();
     });
 
-    setTargetOptions("");
+    renderRecentProjects();
     updateState();
   </script>
 </body>

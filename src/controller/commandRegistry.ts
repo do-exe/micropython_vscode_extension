@@ -8,6 +8,7 @@ export type MicroPythonCommandHandlers = {
   softResetDevice: () => Promise<void>;
   runCurrentFile: () => Promise<void>;
   runInteractiveFile: () => Promise<void>;
+  runAutoFile: () => Promise<void>;
   linkFolder: () => Promise<void>;
   syncFolder: (uri?: vscode.Uri) => Promise<void>;
   fetchWorkspace: () => Promise<void>;
@@ -49,6 +50,7 @@ export function registerMicroPythonCommands(
     register("micropython.softResetDevice", handlers.softResetDevice),
     register("micropython.runCurrentFile", handlers.runCurrentFile),
     register("micropython.runInteractiveFile", handlers.runInteractiveFile),
+    register("micropython.runFileEditor", handlers.runAutoFile),
     register("micropython.linkFolder", handlers.linkFolder),
     register("micropython.syncFolder", handlers.syncFolder),
     register("micropython.fetchWorkspace", handlers.fetchWorkspace),
