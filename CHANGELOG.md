@@ -2,17 +2,11 @@
 
 ## 0.7.0 - 2026-06-15
 
-- Downgraded Driver xAI from the active extension surface and removed its active runtime, package, vendor submodule, docs, and MCP tool integration.
-- Expanded the extension direction toward multiple microcontroller frameworks: MicroPython, Arduino, ESP-IDF, and STM32.
-- Added the framework launcher workflow with recent projects, framework-specific project setup, and platform action views.
-- Added `project.json` project-context memory for generated MicroPython, Arduino, ESP-IDF, and STM templates.
-- Added generic toolchain backend and MCP setup tools: `toolchain_status`, `toolchain_install`, `toolchain_update`, `toolchain_remove`, and `toolchain_open_folder`.
-- Added Toolchains status UI on the project setup page with installed/missing state, install/update, folder, and remove actions.
-- Added Arduino library install, search, and list support through backend and MCP tools.
-- Improved STM support with bundled ST-Link/OpenOCD runtime discovery, Linux library path setup, and `libgcc` linking for bare-metal builds.
-- Updated the STM e-paper sample to render the Sohox Connect bitmap image.
-- Added workspace ignore rules so locally generated project folders stay out of git while committed sample projects remain tracked.
-- Added a single editor Run button for MicroPython files that automatically uses interactive mode when a script needs input/stdin and non-interactive mode when it does not.
+- Downgraded Driver xAI from the active extension surface.
+- Expanded support for MicroPython, Arduino, ESP-IDF, and STM32 workflows.
+- Added framework launcher, recent projects, and project-context setup.
+- Added generic toolchain status/install/update/remove/open-folder support.
+- Added a MicroPython editor Run button that handles both input and non-input scripts.
 
 ## 0.6.0 - 2026-05-20
 
