@@ -7,6 +7,7 @@
 - Added framework launcher, recent projects, and project-context setup.
 - Added generic toolchain status/install/update/remove/open-folder support.
 - Added a MicroPython editor Run button that handles both input and non-input scripts.
+- Next planned downgrade: the MicroPython Extension name and branding.
 
 ## 0.6.0 - 2026-05-20
 
