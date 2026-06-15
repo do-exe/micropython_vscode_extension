@@ -42,7 +42,6 @@
     "out/**",
     "src/backend/host/python_service/**",
     "src/backend/device/**",
-    "vendor/driver_xAI/**",
     "runtime/**",
     "docs/**",
     "templates/**",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,6 +30,56 @@ STM_TARGET_CONFIGS: dict[str, str] = {
     "stm32wb": "target/stm32wbx.cfg",
     "stm32wl": "target/stm32wlx.cfg",
 }
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def _runtime_platform_key() -> str | None:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "linux":
+        if machine in {"x86_64", "amd64"}:
+            return "linux-x64"
+        if machine in {"aarch64", "arm64"}:
+            return "linux-arm64"
+    if system == "windows":
+        if machine in {"amd64", "x86_64"}:
+            return "win32-x64"
+        if machine in {"arm64", "aarch64"}:
+            return "win32-arm64"
+    return None
+
+
+def _bundled_runtime_root() -> Path | None:
+    explicit = os.environ.get("MICROPYTHON_RUNTIME_ROOT")
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        if path.is_dir():
+            return path
+
+    platform_key = _runtime_platform_key()
+    if not platform_key:
+        return None
+
+    path = _repo_root() / "runtime" / platform_key
+    return path if path.is_dir() else None
+
+
+def _bundled_tool_path(name: str) -> str | None:
+    runtime_root = _bundled_runtime_root()
+    if runtime_root is None:
+        return None
+
+    candidates = [runtime_root / "bin" / name]
+    if platform.system().lower() == "windows" and not name.lower().endswith(".exe"):
+        candidates.append(runtime_root / "bin" / f"{name}.exe")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _runtime_root_from_tool(tool_path: str | None) -> Path | None:
@@ -80,8 +131,31 @@ def _stlink_share_dir(tool_path: str | None = None) -> str | None:
 
 
 def _which(name: str) -> str | None:
+    bundled = _bundled_tool_path(name)
+    if bundled:
+        return bundled
     found = shutil.which(name)
     return str(Path(found).resolve()) if found else None
+
+
+def _runtime_env_for_tool(tool_path: str | None) -> dict[str, str] | None:
+    runtime_root = _runtime_root_from_tool(tool_path)
+    if runtime_root is None:
+        runtime_root = _bundled_runtime_root()
+    if runtime_root is None:
+        return None
+
+    env = os.environ.copy()
+    bin_dir = runtime_root / "bin"
+    if bin_dir.is_dir():
+        env["PATH"] = os.pathsep.join([str(bin_dir), env.get("PATH", "")])
+
+    lib_dir = runtime_root / "lib"
+    if platform.system().lower() == "linux" and lib_dir.is_dir():
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            [str(lib_dir), env.get("LD_LIBRARY_PATH", "")]
+        )
+    return env
 
 
 def _run_process(command: list[str], timeout_seconds: float) -> dict[str, Any]:
@@ -92,6 +166,7 @@ def _run_process(command: list[str], timeout_seconds: float) -> dict[str, Any]:
             check=False,
             text=True,
             timeout=timeout_seconds,
+            env=_runtime_env_for_tool(command[0]),
         )
     except FileNotFoundError:
         return {

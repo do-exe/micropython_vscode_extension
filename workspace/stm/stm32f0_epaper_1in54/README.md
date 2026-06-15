@@ -17,4 +17,4 @@ GND  -> GND
 
 ## Current Demo
 
-The firmware initializes the panel, streams a generated black/white splash image directly to display RAM, refreshes, then puts the e-paper controller to sleep. The image contains a border, sun, hills, and large `STM` text without allocating a full framebuffer.
+The firmware initializes the panel, streams a dithered 200x200 black/white `sohoxconnect` image directly to display RAM, refreshes, then puts the e-paper controller to sleep. The bitmap is packed in `include/sohoxconnect_image.h` and avoids allocating a full framebuffer.

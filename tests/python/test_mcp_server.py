@@ -127,7 +127,7 @@ class McpServerPortReleaseTests(unittest.TestCase):
             "reason": mcp_server.MCP_TOOL_SESSION_RELEASE_REASON,
         }])
 
-    def test_driver_xai_tools_are_listed(self) -> None:
+    def test_platform_tools_are_listed(self) -> None:
         session = FakeSession()
         server = self.create_server(session)
 
@@ -140,53 +140,46 @@ class McpServerPortReleaseTests(unittest.TestCase):
         self.assertIn("stm_build_and_flash", names)
         self.assertIn("arduino_toolchain_status", names)
         self.assertIn("arduino_install_core", names)
+        self.assertIn("arduino_install_library", names)
+        self.assertIn("arduino_search_libraries", names)
+        self.assertIn("arduino_list_libraries", names)
         self.assertIn("arduino_compile", names)
         self.assertIn("arduino_upload", names)
         self.assertIn("arduino_compile_and_upload", names)
+        self.assertIn("toolchain_status", names)
+        self.assertIn("toolchain_install", names)
+        self.assertIn("toolchain_update", names)
+        self.assertIn("toolchain_remove", names)
+        self.assertIn("toolchain_open_folder", names)
+        self.assertIn("project_context_read", names)
+        self.assertIn("project_context_update", names)
         self.assertIn("esp_idf_status", names)
         self.assertIn("esp_idf_set_target", names)
         self.assertIn("esp_idf_build", names)
         self.assertIn("esp_idf_flash", names)
         self.assertIn("esp_idf_build_and_flash", names)
-        self.assertIn("driver_xai_search", names)
-        self.assertIn("driver_xai_prepare_bundle", names)
-        self.assertIn("driver_xai_deploy_bundle", names)
-        self.assertIn("driver_xai_execute", names)
 
-    def test_driver_xai_search_tool_returns_catalog_matches(self) -> None:
-        session = FakeSession()
-        server = self.create_server(session)
-
-        result = server._call_tool("driver_xai_search", {"query": "ads1115"})
-        payload = result["content"][0]["text"]
-
-        self.assertFalse(result["isError"], payload)
-        self.assertIn("ads1115", payload)
-
-    def test_driver_xai_deploy_bundle_releases_serial_session(self) -> None:
+    def test_project_context_tools_create_and_update_project_json(self) -> None:
         session = FakeSession()
         server = self.create_server(session)
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            bundle_dir = pathlib.Path(temp_dir) / "bundle"
-            bundle_dir.mkdir()
-            (bundle_dir / "driver_xai.lock.json").write_text("{}", encoding="utf-8")
-
-            result = server._call_tool(
-                "driver_xai_deploy_bundle",
+            create_result = server._call_tool(
+                "project_context_read",
+                {"projectFolder": temp_dir, "createIfMissing": True, "framework": "arduino"},
+            )
+            update_result = server._call_tool(
+                "project_context_update",
                 {
-                    "port": "/dev/ttyACM0",
-                    "bundleDir": str(bundle_dir),
+                    "projectFolder": temp_dir,
+                    "patch": {"board": {"fqbn": "arduino:avr:uno"}, "modules": [{"id": "led", "pin": 13}]},
+                    "framework": "arduino",
                 },
             )
 
-        self.assertFalse(result["isError"], result["content"][0]["text"])
-        self.assertEqual(len(session.sync_calls), 1)
-        self.assertEqual(session.close_calls, [{
-            "emitEvent": False,
-            "reason": mcp_server.MCP_TOOL_SESSION_RELEASE_REASON,
-        }])
-
+        self.assertFalse(create_result["isError"], create_result["content"][0]["text"])
+        self.assertFalse(update_result["isError"], update_result["content"][0]["text"])
+        self.assertIn("arduino:avr:uno", update_result["content"][0]["text"])
 
 if __name__ == "__main__":
     unittest.main()

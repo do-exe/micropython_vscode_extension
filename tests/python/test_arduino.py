@@ -33,6 +33,25 @@ class ArduinoToolchainTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertFalse(result["installed"])
 
+    def test_install_library_reports_missing_toolchain_without_throwing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = arduino.install_library("Adafruit ADS1X15", toolchain_path=temp_dir, timeout_seconds=1)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["library"], "Adafruit ADS1X15")
+        self.assertEqual(result["operation"], "install-library")
+
+    def test_search_and_list_libraries_report_missing_toolchain_without_throwing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            search = arduino.search_libraries("ads1115", toolchain_path=temp_dir, timeout_seconds=1)
+            listed = arduino.list_libraries(toolchain_path=temp_dir, timeout_seconds=1)
+
+        self.assertFalse(search["ok"])
+        self.assertEqual(search["query"], "ads1115")
+        self.assertEqual(search["operation"], "search-libraries")
+        self.assertFalse(listed["ok"])
+        self.assertEqual(listed["operation"], "list-libraries")
+
 
 if __name__ == "__main__":
     unittest.main()

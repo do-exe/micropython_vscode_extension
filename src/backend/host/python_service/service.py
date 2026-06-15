@@ -12,8 +12,10 @@ from .session import PersistentSession
 from .sync_utils import list_detected_esp_ports
 from . import arduino
 from . import esp_idf
+from . import project_context
 from . import stlink
 from . import stm_build
+from . import toolchains
 
 _service_write_lock = threading.Lock()
 
@@ -257,6 +259,40 @@ class JobDispatcher:
                         )
                     ) if job.stream else None,
                 )
+            if job.command == "project-context.read":
+                return project_context.read(
+                    str(args["projectFolder"]),
+                    create_if_missing=bool(args.get("createIfMissing", False)),
+                    framework=_optional_arg_string(args, "framework"),
+                )
+            if job.command == "project-context.update":
+                patch = args.get("patch")
+                if not isinstance(patch, dict):
+                    raise ValueError("patch must be an object")
+                return project_context.update(
+                    str(args["projectFolder"]),
+                    patch,
+                    replace=bool(args.get("replace", False)),
+                    create_if_missing=bool(args.get("createIfMissing", True)),
+                    framework=_optional_arg_string(args, "framework"),
+                )
+            if job.command == "toolchain.status":
+                platform = _optional_arg_string(args, "platform")
+                return toolchains.status(platform) if platform else toolchains.list_status()
+            if job.command == "toolchain.install":
+                return toolchains.install(
+                    str(args["platform"]),
+                    timeout_seconds=float(args.get("timeoutSeconds", 1800.0)),
+                )
+            if job.command == "toolchain.update":
+                return toolchains.update(
+                    str(args["platform"]),
+                    timeout_seconds=float(args.get("timeoutSeconds", 1800.0)),
+                )
+            if job.command == "toolchain.remove":
+                return toolchains.remove(str(args["platform"]))
+            if job.command == "toolchain.open-folder":
+                return toolchains.open_folder(str(args["platform"]))
             if job.command == "arduino.status":
                 return arduino.status(toolchain_path=_optional_arg_string(args, "toolchainPath"))
             if job.command == "arduino.install-core":
@@ -264,6 +300,23 @@ class JobDispatcher:
                     str(args["package"]),
                     toolchain_path=_optional_arg_string(args, "toolchainPath"),
                     timeout_seconds=float(args.get("timeoutSeconds", 600.0)),
+                )
+            if job.command == "arduino.install-library":
+                return arduino.install_library(
+                    str(args["library"]),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 600.0)),
+                )
+            if job.command == "arduino.search-libraries":
+                return arduino.search_libraries(
+                    str(args["query"]),
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 120.0)),
+                )
+            if job.command == "arduino.list-libraries":
+                return arduino.list_libraries(
+                    toolchain_path=_optional_arg_string(args, "toolchainPath"),
+                    timeout_seconds=float(args.get("timeoutSeconds", 120.0)),
                 )
             if job.command == "arduino.compile":
                 return arduino.compile_project(

@@ -96,6 +96,21 @@ def install_core(fqbn_package: str, toolchain_path: str | None = None, timeout_s
     return _run([*_base_command(toolchain_path), "core", "install", fqbn_package], timeout_seconds)
 
 
+def install_library(library_name: str, toolchain_path: str | None = None, timeout_seconds: float = 600.0) -> dict[str, Any]:
+    result = _run([*_base_command(toolchain_path), "lib", "install", library_name], timeout_seconds)
+    return {**result, "library": library_name, "operation": "install-library"}
+
+
+def search_libraries(query: str, toolchain_path: str | None = None, timeout_seconds: float = 120.0) -> dict[str, Any]:
+    result = _run([*_base_command(toolchain_path), "lib", "search", query], timeout_seconds)
+    return {**result, "query": query, "operation": "search-libraries"}
+
+
+def list_libraries(toolchain_path: str | None = None, timeout_seconds: float = 120.0) -> dict[str, Any]:
+    result = _run([*_base_command(toolchain_path), "lib", "list"], timeout_seconds)
+    return {**result, "operation": "list-libraries"}
+
+
 def compile_project(
     project_folder: str,
     fqbn: str,

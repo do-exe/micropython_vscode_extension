@@ -360,12 +360,63 @@ export class BackendServiceClient implements vscode.Disposable {
     return this.request<ToolchainCommandResult>("arduino.status", { toolchainPath });
   }
 
+  public async toolchainStatus(platform?: string): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("toolchain.status", { platform });
+  }
+
+  public async toolchainInstall(platform: string, timeoutSeconds = 1800): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("toolchain.install", { platform, timeoutSeconds });
+  }
+
+  public async toolchainUpdate(platform: string, timeoutSeconds = 1800): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("toolchain.update", { platform, timeoutSeconds });
+  }
+
+  public async toolchainRemove(platform: string): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("toolchain.remove", { platform });
+  }
+
+  public async toolchainOpenFolder(platform: string): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("toolchain.open-folder", { platform });
+  }
+
   public async arduinoInstallCore(
     corePackage: string,
     options: { toolchainPath?: string; timeoutSeconds?: number } = {},
   ): Promise<ToolchainCommandResult> {
     return this.request<ToolchainCommandResult>("arduino.install-core", {
       package: corePackage,
+      toolchainPath: options.toolchainPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async arduinoInstallLibrary(
+    library: string,
+    options: { toolchainPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.install-library", {
+      library,
+      toolchainPath: options.toolchainPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async arduinoSearchLibraries(
+    query: string,
+    options: { toolchainPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.search-libraries", {
+      query,
+      toolchainPath: options.toolchainPath,
+      timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async arduinoListLibraries(
+    options: { toolchainPath?: string; timeoutSeconds?: number } = {},
+  ): Promise<ToolchainCommandResult> {
+    return this.request<ToolchainCommandResult>("arduino.list-libraries", {
       toolchainPath: options.toolchainPath,
       timeoutSeconds: options.timeoutSeconds,
     });
@@ -413,6 +464,31 @@ export class BackendServiceClient implements vscode.Disposable {
       toolchainPath: options.toolchainPath,
       outputDir: options.outputDir,
       timeoutSeconds: options.timeoutSeconds,
+    });
+  }
+
+  public async projectContextRead(
+    projectFolder: string,
+    options: { createIfMissing?: boolean; framework?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("project-context.read", {
+      projectFolder,
+      createIfMissing: options.createIfMissing,
+      framework: options.framework,
+    });
+  }
+
+  public async projectContextUpdate(
+    projectFolder: string,
+    patch: Record<string, unknown>,
+    options: { replace?: boolean; createIfMissing?: boolean; framework?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("project-context.update", {
+      projectFolder,
+      patch,
+      replace: options.replace,
+      createIfMissing: options.createIfMissing,
+      framework: options.framework,
     });
   }
 

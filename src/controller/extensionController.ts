@@ -103,6 +103,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
   private readonly arduinoOutput: vscode.OutputChannel;
   private readonly espIdfOutput: vscode.OutputChannel;
   private readonly stmOutput: vscode.OutputChannel;
+  private readonly toolchainOutput: vscode.OutputChannel;
   private readonly platformLauncherViewProvider: PlatformLauncherViewProvider;
   private readonly workspaceTreeView: vscode.TreeView<MicroPythonWorkspaceItem>;
   private readonly workspaceViewProvider: MicroPythonWorkspaceViewProvider;
@@ -162,6 +163,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     this.arduinoOutput = vscode.window.createOutputChannel("Arduino", { log: true });
     this.espIdfOutput = vscode.window.createOutputChannel("ESP-IDF", { log: true });
     this.stmOutput = vscode.window.createOutputChannel("STM", { log: true });
+    this.toolchainOutput = vscode.window.createOutputChannel("Toolchains", { log: true });
     this.workspaceFileSystemProvider = new MicroPythonWorkspaceFileSystemProvider({
       stat: async (uri: vscode.Uri) => this.statWorkspaceUri(uri),
       readDirectory: async (uri: vscode.Uri) => this.readWorkspaceDirectoryUri(uri),
@@ -175,7 +177,10 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       scanTree: async () => this.scanWorkspaceTree(),
       shouldAutoLoad: () => this.shouldAutoScanWorkspace(),
     });
-    this.platformLauncherViewProvider = new PlatformLauncherViewProvider(() => this.getRecentPlatformProjectsForView());
+    this.platformLauncherViewProvider = new PlatformLauncherViewProvider(
+      this.context.extensionPath,
+      () => this.getRecentPlatformProjectsForView(),
+    );
     this.workspaceTreeView = vscode.window.createTreeView("micropython.workspaceView", {
       treeDataProvider: this.workspaceViewProvider,
       manageCheckboxStateManually: true,
@@ -218,6 +223,21 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       }),
       vscode.commands.registerCommand("micropython.showPlatformLauncher", async () => {
         await this.showPlatformLauncher();
+      }),
+      vscode.commands.registerCommand("micropython.toolchain.status", async (platform?: string) => {
+        await this.toolchainStatusCommand(platform);
+      }),
+      vscode.commands.registerCommand("micropython.toolchain.install", async (platform: string) => {
+        await this.toolchainInstallCommand(platform);
+      }),
+      vscode.commands.registerCommand("micropython.toolchain.update", async (platform: string) => {
+        await this.toolchainUpdateCommand(platform);
+      }),
+      vscode.commands.registerCommand("micropython.toolchain.remove", async (platform: string) => {
+        await this.toolchainRemoveCommand(platform);
+      }),
+      vscode.commands.registerCommand("micropython.toolchain.openFolder", async (platform: string) => {
+        await this.toolchainOpenFolderCommand(platform);
       }),
       vscode.commands.registerCommand("micropython.arduino.toolchainStatus", async () => {
         await this.arduinoToolchainStatusCommand();
@@ -340,6 +360,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       this.arduinoOutput,
       this.espIdfOutput,
       this.stmOutput,
+      this.toolchainOutput,
     );
     this.registerCommands();
     this.aiCommands.registerCommands(this.context);
@@ -477,6 +498,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       await fs.promises.mkdir(projectFolder, { recursive: true });
       await fs.promises.cp(this.platformTemplateFolder(platformId), projectFolder, { recursive: true });
       await this.finalizeCreatedPlatformProject(platformId, projectFolder);
+      await this.ensureProjectContext(platformId, projectFolder);
       await this.configureMicroPythonProjectSync(platformId, projectFolder);
       await this.setSelectedPlatformProjectFolder(platformId, projectFolder);
       await this.rememberRecentPlatformProject(platformId, projectFolder);
@@ -497,6 +519,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
     await this.setSelectedPlatformProjectFolder(platformId, folder);
     await this.rememberRecentPlatformProject(platformId, folder);
+    await this.ensureProjectContext(platformId, folder);
     await this.configureMicroPythonProjectSync(platformId, folder);
     await this.addFolderToWorkspace(folder);
     await this.applyPlatformSelection(platformId);
@@ -526,6 +549,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       await fs.promises.mkdir(projectFolder, { recursive: true });
       await fs.promises.cp(this.platformTemplateFolder(setup.platformId), projectFolder, { recursive: true });
       await this.finalizeCreatedPlatformProject(setup.platformId, projectFolder);
+      await this.ensureProjectContext(setup.platformId, projectFolder, { boardTarget: setup.boardTarget });
       await this.configureMicroPythonProjectSync(setup.platformId, projectFolder);
       await this.applyPlatformSetup(setup.platformId, setup.boardTarget, setup.port);
       await this.setSelectedPlatformProjectFolder(setup.platformId, projectFolder);
@@ -557,6 +581,7 @@ export class MicroPythonExtensionController implements vscode.Disposable {
 
     const recent = this.readRecentPlatformProjects().find((project) => path.resolve(project.folder) === path.resolve(folder));
     await this.applyPlatformSetup(platformId, recent?.boardTarget, recent?.port);
+    await this.ensureProjectContext(platformId, folder, { boardTarget: recent?.boardTarget });
     await this.setSelectedPlatformProjectFolder(platformId, folder);
     await this.configureMicroPythonProjectSync(platformId, folder);
     await this.rememberRecentPlatformProject(platformId, folder, {
@@ -591,6 +616,52 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     }
 
     await fs.promises.rename(path.join(projectFolder, inoFiles[0]), expectedSketchPath);
+  }
+
+  private async ensureProjectContext(
+    platformId: PlatformId,
+    projectFolder: string,
+    options: { boardTarget?: string } = {},
+  ): Promise<void> {
+    const contextPath = path.join(projectFolder, "project.json");
+    const now = new Date().toISOString();
+    let existing: Record<string, unknown> = {};
+    if (await this.pathExists(contextPath)) {
+      try {
+        const parsed = JSON.parse(await fs.promises.readFile(contextPath, "utf8"));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existing = parsed as Record<string, unknown>;
+        }
+      } catch {
+        existing = {};
+      }
+    }
+
+    const board = existing.board && typeof existing.board === "object" && !Array.isArray(existing.board)
+      ? { ...(existing.board as Record<string, unknown>) }
+      : {};
+    const boardTarget = options.boardTarget?.trim();
+    if (boardTarget) {
+      if (platformId === "arduino") {
+        board.fqbn = boardTarget;
+      } else {
+        board.target = boardTarget;
+      }
+    }
+
+    const context = {
+      ...existing,
+      schema_version: typeof existing.schema_version === "string" && existing.schema_version ? existing.schema_version : "1.0",
+      name: path.basename(projectFolder),
+      framework: this.projectContextFramework(platformId),
+      created_at: typeof existing.created_at === "string" && existing.created_at ? existing.created_at : now,
+      updated_at: now,
+      board,
+      modules: Array.isArray(existing.modules) ? existing.modules : [],
+      notes: Array.isArray(existing.notes) ? existing.notes : [],
+    };
+
+    await fs.promises.writeFile(contextPath, JSON.stringify(context, null, 2) + "\n", "utf8");
   }
 
   private async configureMicroPythonProjectSync(platformId: PlatformId, projectFolder: string): Promise<void> {
@@ -728,6 +799,16 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     return labels[platformId];
   }
 
+  private projectContextFramework(platformId: PlatformId): string {
+    const frameworks: Record<PlatformId, string> = {
+      micropython: "micropython",
+      arduino: "arduino",
+      espidf: "esp_idf",
+      stm: "stm_baremetal",
+    };
+    return frameworks[platformId];
+  }
+
   private defaultProjectName(platformId: PlatformId): string {
     const names: Record<PlatformId, string> = {
       micropython: "micropython_app",
@@ -794,6 +875,65 @@ export class MicroPythonExtensionController implements vscode.Disposable {
       this.arduinoOutput,
       () => this.backend.arduinoToolchainStatus(),
     );
+  }
+
+  private async toolchainStatusCommand(platform?: string): Promise<void> {
+    await this.executeToolchainOperation(
+      platform ? `Toolchain: Checking ${platform}` : "Toolchain: Checking status",
+      this.toolchainOutput,
+      () => this.backend.toolchainStatus(platform),
+    );
+    this.platformLauncherViewProvider.refresh();
+  }
+
+  private async toolchainInstallCommand(platform: string): Promise<void> {
+    await this.executeToolchainOperation(
+      `Toolchain: Installing ${platform}`,
+      this.toolchainOutput,
+      () => this.backend.toolchainInstall(platform),
+    );
+    this.platformLauncherViewProvider.refresh();
+  }
+
+  private async toolchainUpdateCommand(platform: string): Promise<void> {
+    await this.executeToolchainOperation(
+      `Toolchain: Updating ${platform}`,
+      this.toolchainOutput,
+      () => this.backend.toolchainUpdate(platform),
+    );
+    this.platformLauncherViewProvider.refresh();
+  }
+
+  private async toolchainRemoveCommand(platform: string): Promise<void> {
+    const confirmed = await vscode.window.showWarningMessage(
+      `Remove local toolchain '${platform}'?`,
+      { modal: true },
+      "Remove",
+    );
+    if (confirmed !== "Remove") {
+      return;
+    }
+    await this.executeToolchainOperation(
+      `Toolchain: Removing ${platform}`,
+      this.toolchainOutput,
+      () => this.backend.toolchainRemove(platform),
+    );
+    this.platformLauncherViewProvider.refresh();
+  }
+
+  private async toolchainOpenFolderCommand(platform: string): Promise<void> {
+    const result = await this.executeToolchainOperation(
+      `Toolchain: Opening ${platform} folder`,
+      this.toolchainOutput,
+      () => this.backend.toolchainOpenFolder(platform),
+    );
+    const root = typeof result?.root === "string" ? result.root : undefined;
+    if (!root) {
+      return;
+    }
+    await fs.promises.mkdir(root, { recursive: true });
+    await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(root));
+    this.platformLauncherViewProvider.refresh();
   }
 
   private async arduinoInstallCoreCommand(): Promise<void> {
@@ -1417,6 +1557,10 @@ export class MicroPythonExtensionController implements vscode.Disposable {
     this.cleanupOutput.dispose();
     this.workspaceOutput.dispose();
     this.workspaceFetchOutput.dispose();
+    this.arduinoOutput.dispose();
+    this.espIdfOutput.dispose();
+    this.stmOutput.dispose();
+    this.toolchainOutput.dispose();
   }
 
   private registerCommands(): void {

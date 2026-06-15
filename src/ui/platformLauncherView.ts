@@ -24,6 +24,18 @@ export type PlatformProjectSetup = {
   readonly port?: string;
 };
 
+export type ToolchainPlatformId = "arduino" | "espidf" | "stm-arm" | "stm-stlink";
+
+type ToolchainDefinition = {
+  readonly platform: ToolchainPlatformId;
+  readonly name: string;
+  readonly checkPath: string;
+};
+
+type ToolchainViewItem = ToolchainDefinition & {
+  readonly installed: boolean;
+};
+
 type PlatformActionDefinition = {
   readonly id: string;
   readonly label: string;
@@ -48,6 +60,29 @@ const PLATFORMS: readonly PlatformDefinition[] = [
   {
     id: "stm",
     label: "STM",
+  },
+];
+
+const TOOLCHAINS: readonly ToolchainDefinition[] = [
+  {
+    platform: "arduino",
+    name: "Arduino CLI",
+    checkPath: "toolchain/arduino/bin/arduino-cli",
+  },
+  {
+    platform: "espidf",
+    name: "ESP-IDF",
+    checkPath: "toolchain/esp-idf/export.sh",
+  },
+  {
+    platform: "stm-arm",
+    name: "STM ARM GCC",
+    checkPath: "toolchain/arm-none-eabi/bin/arm-none-eabi-gcc",
+  },
+  {
+    platform: "stm-stlink",
+    name: "ST-Link Runtime",
+    checkPath: path.join("runtime", runtimePlatformKey(), "bin", process.platform === "win32" ? "openocd.exe" : "openocd"),
   },
 ];
 
@@ -283,7 +318,10 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
 
   private webviewView: vscode.WebviewView | undefined;
 
-  constructor(private readonly recentProjects: () => readonly PlatformRecentProject[]) {}
+  constructor(
+    private readonly extensionPath: string,
+    private readonly recentProjects: () => readonly PlatformRecentProject[],
+  ) {}
 
   public refresh(): void {
     if (!this.webviewView) {
@@ -321,6 +359,7 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
         boardTarget?: unknown;
         port?: unknown;
         folder?: unknown;
+        action?: unknown;
       };
       if (candidate.command === "launchProject" && this.isPlatformId(candidate.platformId)) {
         const setup = this.toPlatformProjectSetup(candidate);
@@ -335,6 +374,14 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
         typeof candidate.folder === "string"
       ) {
         void vscode.commands.executeCommand("micropython.openRecentPlatformProject", candidate.platformId, candidate.folder);
+        return;
+      }
+      if (
+        candidate.command === "toolchainAction" &&
+        typeof candidate.action === "string" &&
+        typeof candidate.platformId === "string"
+      ) {
+        void vscode.commands.executeCommand(`micropython.toolchain.${candidate.action}`, candidate.platformId);
       }
     });
   }
@@ -368,6 +415,7 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
     const nonce = getNonce();
     const recentProjects = this.recentProjects();
     const recentProjectsJson = JSON.stringify(recentProjects).replace(/</g, "\\u003c");
+    const toolchainsJson = JSON.stringify(this.getToolchainItems()).replace(/</g, "\\u003c");
     const platformOptions = PLATFORMS.map((platform) => (
       `<option value="${platform.id}">${escapeHtml(platform.label)}</option>`
     )).join("");
@@ -499,6 +547,14 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-widget-border));
     }
 
+    .toolchains {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-top: 10px;
+      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-widget-border));
+    }
+
     .recent-list {
       display: flex;
       flex-direction: column;
@@ -607,6 +663,74 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       min-height: 26px;
       font-size: 12px;
     }
+
+    .toolchain-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .toolchain-row {
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 5px 7px;
+      border: 1px solid var(--vscode-widget-border, transparent);
+      border-radius: 4px;
+    }
+
+    .toolchain-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .toolchain-ok {
+      color: #ffffff;
+      background: #2f7d32;
+    }
+
+    .toolchain-missing {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+    }
+
+    .toolchain-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+
+    .toolchain-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .toolchain-action {
+      min-width: 26px;
+      min-height: 24px;
+      padding: 0 6px;
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+      border: 1px solid transparent;
+      border-radius: 4px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 11px;
+    }
+
+    .toolchain-action:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
   </style>
 </head>
 <body>
@@ -633,17 +757,24 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       <input class="recent-search" id="recentSearch" type="search" placeholder="Search recent projects">
       <div class="recent-list" id="recentList"></div>
     </section>
+
+    <section class="toolchains" aria-label="Toolchains">
+      <span class="section-title">Toolchains</span>
+      <div class="toolchain-list" id="toolchainList"></div>
+    </section>
   </form>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const recentProjects = ${recentProjectsJson};
+    const toolchains = ${toolchainsJson};
     const framework = document.getElementById("framework");
     const projectGroup = document.getElementById("projectGroup");
     const projectName = document.getElementById("projectName");
     const launch = document.getElementById("launch");
     const recentSearch = document.getElementById("recentSearch");
     const recentList = document.getElementById("recentList");
+    const toolchainList = document.getElementById("toolchainList");
 
     const projectDefaults = {
       micropython: "micropython_app",
@@ -706,6 +837,27 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
       }).join("");
     }
 
+    function renderToolchains() {
+      toolchainList.innerHTML = toolchains.map((toolchain) => {
+        const iconClass = toolchain.installed ? 'toolchain-ok' : 'toolchain-missing';
+        const icon = toolchain.installed ? '&#10003;' : '&#8681;';
+        const primaryAction = toolchain.installed ? 'update' : 'install';
+        const primaryLabel = toolchain.installed ? 'Update' : 'Install';
+        const removeButton = toolchain.installed
+          ? '<button class="toolchain-action" type="button" data-action="remove" data-platform="' + escapeHtml(toolchain.platform) + '">Remove</button>'
+          : '';
+        return '<div class="toolchain-row">' +
+          '<span class="toolchain-icon ' + iconClass + '">' + icon + '</span>' +
+          '<span class="toolchain-name">' + escapeHtml(toolchain.name) + '</span>' +
+          '<span class="toolchain-actions">' +
+          '<button class="toolchain-action" type="button" data-action="' + primaryAction + '" data-platform="' + escapeHtml(toolchain.platform) + '">' + primaryLabel + '</button>' +
+          '<button class="toolchain-action" type="button" data-action="openFolder" data-platform="' + escapeHtml(toolchain.platform) + '">Folder</button>' +
+          removeButton +
+          '</span>' +
+          '</div>';
+      }).join("");
+    }
+
     framework.addEventListener("change", () => {
       const platformId = framework.value;
       if (platformId && !projectName.value.trim()) {
@@ -737,12 +889,31 @@ export class PlatformLauncherViewProvider implements vscode.WebviewViewProvider 
         });
       }
     });
+    toolchainList.addEventListener("click", (event) => {
+      const button = event.target.closest(".toolchain-action");
+      if (!button) {
+        return;
+      }
+      vscode.postMessage({
+        command: "toolchainAction",
+        action: button.dataset.action,
+        platformId: button.dataset.platform,
+      });
+    });
 
     renderRecentProjects();
+    renderToolchains();
     updateState();
   </script>
 </body>
 </html>`;
+  }
+
+  private getToolchainItems(): readonly ToolchainViewItem[] {
+    return TOOLCHAINS.map((toolchain) => ({
+      ...toolchain,
+      installed: fs.existsSync(path.join(this.extensionPath, toolchain.checkPath)),
+    }));
   }
 }
 
@@ -883,6 +1054,19 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function runtimePlatformKey(): string {
+  if (process.platform === "linux") {
+    return process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+  }
+  if (process.platform === "win32") {
+    return process.arch === "arm64" ? "win32-arm64" : "win32-x64";
+  }
+  if (process.platform === "darwin") {
+    return process.arch === "arm64" ? "darwin-arm64" : "darwin-x64";
+  }
+  return `${process.platform}-${process.arch}`;
 }
 
 function getNonce(): string {

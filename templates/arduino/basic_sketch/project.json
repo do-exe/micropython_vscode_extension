@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "name": "basic_sketch",
+  "framework": "arduino",
+  "created_at": "",
+  "updated_at": "",
+  "board": {
+    "fqbn": "",
+    "name": ""
+  },
+  "modules": [],
+  "notes": []
+}

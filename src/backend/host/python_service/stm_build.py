@@ -129,6 +129,7 @@ def build_firmware(
         str(linker),
         "-o",
         str(elf),
+        "-lgcc",
     ]
 
     steps: list[dict[str, Any]] = []

@@ -12,9 +12,10 @@ from typing import Any, Callable
 from . import PersistentSession, list_detected_esp_ports
 from . import arduino
 from . import esp_idf
-from .driver_xai.mcp_tools import DriverXaiMcpTools
+from . import project_context
 from . import stlink
 from . import stm_build
+from . import toolchains
 
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -37,7 +38,6 @@ class MicroPythonMcpServer:
             emit_terminal_text=lambda _text: None,
             emit_session_state=lambda _payload: None,
         )
-        self._driver_xai_tools = DriverXaiMcpTools()
 
     def serve(self) -> None:
         try:
@@ -116,9 +116,19 @@ class MicroPythonMcpServer:
             "stm_build_and_flash": self._tool_stm_build_and_flash,
             "arduino_toolchain_status": self._tool_arduino_toolchain_status,
             "arduino_install_core": self._tool_arduino_install_core,
+            "arduino_install_library": self._tool_arduino_install_library,
+            "arduino_search_libraries": self._tool_arduino_search_libraries,
+            "arduino_list_libraries": self._tool_arduino_list_libraries,
             "arduino_compile": self._tool_arduino_compile,
             "arduino_upload": self._tool_arduino_upload,
             "arduino_compile_and_upload": self._tool_arduino_compile_and_upload,
+            "project_context_read": self._tool_project_context_read,
+            "project_context_update": self._tool_project_context_update,
+            "toolchain_status": self._tool_toolchain_status,
+            "toolchain_install": self._tool_toolchain_install,
+            "toolchain_update": self._tool_toolchain_update,
+            "toolchain_remove": self._tool_toolchain_remove,
+            "toolchain_open_folder": self._tool_toolchain_open_folder,
             "esp_idf_status": self._tool_esp_idf_status,
             "esp_idf_set_target": self._tool_esp_idf_set_target,
             "esp_idf_build": self._tool_esp_idf_build,
@@ -126,26 +136,6 @@ class MicroPythonMcpServer:
             "esp_idf_build_and_flash": self._tool_esp_idf_build_and_flash,
         }
         tool = tools.get(name)
-        if tool is None and self._driver_xai_tools.has_tool(name):
-            try:
-                payload = self._driver_xai_tools.call_tool(
-                    name,
-                    arguments,
-                    session=self._session,
-                    resolve_port=self._resolve_port,
-                )
-            finally:
-                if self._driver_xai_tools.needs_device_session(name):
-                    self._release_device_session(MCP_TOOL_SESSION_RELEASE_REASON)
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(payload, indent=2, sort_keys=True),
-                    }
-                ],
-                "isError": not bool(payload.get("ok", False)) if isinstance(payload, dict) else False,
-            }
         if tool is None:
             raise McpError(-32602, f"Unknown MicroPython tool: {name}")
 
@@ -174,6 +164,28 @@ class MicroPythonMcpServer:
                 "Do not use mpremote, ampy, esptool, or raw serial directly unless this tool reports unsupported."
             ),
         }
+
+    def _tool_toolchain_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        platform = self._optional_string(arguments, "platform")
+        return toolchains.status(platform) if platform else toolchains.list_status()
+
+    def _tool_toolchain_install(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return toolchains.install(
+            self._required_string(arguments, "platform"),
+            timeout_seconds=self._normalize_timeout(arguments.get("timeoutSeconds")) or 1800.0,
+        )
+
+    def _tool_toolchain_update(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return toolchains.update(
+            self._required_string(arguments, "platform"),
+            timeout_seconds=self._normalize_timeout(arguments.get("timeoutSeconds")) or 1800.0,
+        )
+
+    def _tool_toolchain_remove(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return toolchains.remove(self._required_string(arguments, "platform"))
+
+    def _tool_toolchain_open_folder(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return toolchains.open_folder(self._required_string(arguments, "platform"))
 
     def _tool_sync_project(self, arguments: dict[str, Any]) -> dict[str, Any]:
         port = self._resolve_port(arguments)
@@ -476,6 +488,35 @@ class MicroPythonMcpServer:
             timeout_seconds=timeout,
         )
 
+    def _tool_arduino_install_library(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 600.0
+        return arduino.install_library(
+            self._required_string(arguments, "library"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_arduino_search_libraries(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 120.0
+        return arduino.search_libraries(
+            self._required_string(arguments, "query"),
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            timeout_seconds=timeout,
+        )
+
+    def _tool_arduino_list_libraries(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
+        if timeout <= 0:
+            timeout = 120.0
+        return arduino.list_libraries(
+            toolchain_path=self._optional_string(arguments, "toolchainPath"),
+            timeout_seconds=timeout,
+        )
+
     def _tool_arduino_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         timeout = self._normalize_timeout(arguments.get("timeoutSeconds"))
         if timeout <= 0:
@@ -511,6 +552,25 @@ class MicroPythonMcpServer:
             toolchain_path=self._optional_string(arguments, "toolchainPath"),
             output_dir=self._optional_string(arguments, "outputDir"),
             timeout_seconds=timeout,
+        )
+
+    def _tool_project_context_read(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return project_context.read(
+            self._required_string(arguments, "projectFolder"),
+            create_if_missing=bool(arguments.get("createIfMissing", False)),
+            framework=self._optional_string(arguments, "framework"),
+        )
+
+    def _tool_project_context_update(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        patch = arguments.get("patch")
+        if not isinstance(patch, dict):
+            raise ValueError("patch must be an object")
+        return project_context.update(
+            self._required_string(arguments, "projectFolder"),
+            patch,
+            replace=bool(arguments.get("replace", False)),
+            create_if_missing=bool(arguments.get("createIfMissing", True)),
+            framework=self._optional_string(arguments, "framework"),
         )
 
     def _tool_esp_idf_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -734,6 +794,82 @@ class MicroPythonMcpServer:
                 },
             },
             {
+                "name": "toolchain_status",
+                "description": "Checks generic extension toolchain status. Omit platform to list all toolchains.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "platform": {
+                            "type": "string",
+                            "enum": ["arduino", "espidf", "stm-arm", "stm-stlink"],
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "toolchain_install",
+                "description": "Installs a generic extension toolchain into the local toolchain/runtime location.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "platform": {
+                            "type": "string",
+                            "enum": ["arduino", "espidf", "stm-arm", "stm-stlink"],
+                        },
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 7200, "default": 1800},
+                    },
+                    "required": ["platform"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "toolchain_update",
+                "description": "Updates or reinstalls a generic extension toolchain.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "platform": {
+                            "type": "string",
+                            "enum": ["arduino", "espidf", "stm-arm", "stm-stlink"],
+                        },
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 7200, "default": 1800},
+                    },
+                    "required": ["platform"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "toolchain_remove",
+                "description": "Removes a generic extension toolchain folder.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "platform": {
+                            "type": "string",
+                            "enum": ["arduino", "espidf", "stm-arm", "stm-stlink"],
+                        },
+                    },
+                    "required": ["platform"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "toolchain_open_folder",
+                "description": "Returns the local folder path for a generic extension toolchain.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "platform": {
+                            "type": "string",
+                            "enum": ["arduino", "espidf", "stm-arm", "stm-stlink"],
+                        },
+                    },
+                    "required": ["platform"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "arduino_install_core",
                 "description": "Installs an Arduino core package into the local ignored Arduino toolchain cache, for example arduino:avr.",
                 "inputSchema": {
@@ -744,6 +880,46 @@ class MicroPythonMcpServer:
                         "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
                     },
                     "required": ["package"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_install_library",
+                "description": "Installs an Arduino community library into the local ignored Arduino toolchain cache, for example Adafruit ADS1X15.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "library": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
+                    },
+                    "required": ["library"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_search_libraries",
+                "description": "Searches Arduino Library Manager through the local arduino-cli.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "toolchainPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 120, "default": 120},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "arduino_list_libraries",
+                "description": "Lists Arduino libraries installed in the local ignored Arduino toolchain cache.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "toolchainPath": {"type": "string"},
+                        "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 120, "default": 120},
+                    },
                     "additionalProperties": False,
                 },
             },
@@ -793,6 +969,36 @@ class MicroPythonMcpServer:
                         "timeoutSeconds": {"type": "number", "minimum": 0, "maximum": 600, "default": 600},
                     },
                     "required": ["projectFolder", "fqbn", "port"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "project_context_read",
+                "description": "Reads a local project's project.json memory file. Pass the active project folder from the extension or agent context.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "createIfMissing": {"type": "boolean"},
+                        "framework": {"type": "string"},
+                    },
+                    "required": ["projectFolder"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "project_context_update",
+                "description": "Creates or updates a local project's project.json memory file with a generic JSON patch object.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "projectFolder": {"type": "string"},
+                        "patch": {"type": "object"},
+                        "replace": {"type": "boolean"},
+                        "createIfMissing": {"type": "boolean"},
+                        "framework": {"type": "string"},
+                    },
+                    "required": ["projectFolder", "patch"],
                     "additionalProperties": False,
                 },
             },
@@ -872,7 +1078,6 @@ class MicroPythonMcpServer:
                     "additionalProperties": False,
                 },
             },
-            *self._driver_xai_tools.tool_definitions(),
         ]
 
     def _resources(self) -> list[dict[str, Any]]:

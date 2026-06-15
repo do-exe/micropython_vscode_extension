@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "name": "baremetal_app",
+  "framework": "stm_baremetal",
+  "created_at": "",
+  "updated_at": "",
+  "board": {
+    "target": ""
+  },
+  "modules": [],
+  "notes": []
+}

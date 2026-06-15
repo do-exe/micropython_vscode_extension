@@ -42,6 +42,34 @@ class StlinkCommandTests(unittest.TestCase):
             "shutdown",
         ])
 
+    def test_which_prefers_bundled_runtime_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = pathlib.Path(temp_dir) / "runtime" / "linux-x64"
+            bin_dir = runtime / "bin"
+            bin_dir.mkdir(parents=True)
+            openocd = bin_dir / "openocd"
+            openocd.write_text("", encoding="utf-8")
+
+            with mock.patch.object(stlink, "_bundled_runtime_root", return_value=runtime):
+                self.assertEqual(stlink._which("openocd"), str(openocd))
+
+    def test_runtime_env_adds_bundled_library_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = pathlib.Path(temp_dir) / "runtime" / "linux-x64"
+            bin_dir = runtime / "bin"
+            lib_dir = runtime / "lib"
+            bin_dir.mkdir(parents=True)
+            lib_dir.mkdir()
+            openocd = bin_dir / "openocd"
+            openocd.write_text("", encoding="utf-8")
+
+            env = stlink._runtime_env_for_tool(str(openocd))
+
+        self.assertIsNotNone(env)
+        assert env is not None
+        self.assertIn(str(bin_dir), env["PATH"])
+        self.assertIn(str(lib_dir), env.get("LD_LIBRARY_PATH", ""))
+
     def test_flash_bin_adds_flash_address(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             firmware = pathlib.Path(temp_dir) / "firmware.bin"

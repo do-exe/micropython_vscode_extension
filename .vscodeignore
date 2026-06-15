@@ -5,9 +5,6 @@ src/**
 !src/backend/host/python_service/**
 !src/backend/device/
 !src/backend/device/**
-!vendor/
-!vendor/driver_xAI/
-!vendor/driver_xAI/**
 scripts/**
 tsconfig.json
 *.ts

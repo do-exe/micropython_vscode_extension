@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "name": "basic_app",
+  "framework": "esp_idf",
+  "created_at": "",
+  "updated_at": "",
+  "board": {
+    "target": ""
+  },
+  "modules": [],
+  "notes": []
+}
